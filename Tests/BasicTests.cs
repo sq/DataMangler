@@ -38,7 +38,16 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler = new TaskScheduler();
             if (File.Exists(TestFile))
                 File.Delete(TestFile);
-            Tangle = new Tangle<int>(Scheduler, TestFile);
+
+            Tangle = new Tangle<int>(
+                Scheduler, TestFile, 
+                (ref int i, Stream o) => o.Write(BitConverter.GetBytes(i), 0, 4),
+                (Stream i, out int o) => {
+                    var bytes = new byte[4];
+                    i.Read(bytes, 0, bytes.Length);
+                    o = BitConverter.ToInt32(bytes, 0);
+                }
+            );
         }
 
         [TearDown]
@@ -115,7 +124,7 @@ namespace Squared.Data.Mangler.Tests {
 
         [Test]
         public void CanWriteLotsOfValuesSequentially () {
-            const int numValues = 2000;
+            const int numValues = 5000;
 
             long startTime = Time.Ticks;
             Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues));

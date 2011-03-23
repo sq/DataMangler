@@ -38,9 +38,9 @@ namespace Squared.Data.Mangler.Internal {
             Size = (uint)Marshal.SizeOf(typeof(IndexEntry));
         }
 
-        public long KeyOffset, DataOffset;
-        public uint KeyLength, DataLength;
-
+        public uint KeyOffset, DataOffset;
+        public ushort KeyLength;
+        public uint DataLength;
         public byte KeyType, IsValid;
     }
 }
@@ -114,6 +114,9 @@ namespace Squared.Data.Mangler {
         }
 
         public TangleKey (byte[] array, int offset, int count, byte originalType) {
+            if (count >= ushort.MaxValue)
+                throw new InvalidOperationException("Key length limit exceeded");
+
             KeyData = new ArraySegment<byte>(array, offset, count);
             OriginalTypeId = originalType;
         }
@@ -163,9 +166,9 @@ namespace Squared.Data.Mangler {
     }
 
     /// <summary>
-    /// Represents a persistent dictionary keyed by ASCII strings. The values are not stored in any given order on disk, and the values are not required to be resident in memory.
+    /// Represents a persistent dictionary keyed by arbitrary byte strings. The values are not stored in any given order on disk, and the values are not required to be resident in memory.
     /// At any given time a portion of the Tangle's values may be resident in memory. If a value is not resident in memory, it will be fetched asynchronously from disk.
-    /// The Tangle's keys are implicitly ordered, which allows for efficient lookups of individual values by key, or for cheaply locating a range of values with contiguous keys.
+    /// The Tangle's keys are implicitly ordered, which allows for efficient lookups of individual values by key.
     /// Converting values to/from their disk format is handled by the provided TangleSerializer and TangleDeserializer.
     /// The Tangle's disk storage engine partitions its storage up into pages based on the provided page size. For optimal performance, this should be an integer multiple of the size of a memory page (typically 4KB).
     /// </summary>
@@ -337,29 +340,6 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 return 0;
         }
 
-        private IndexEntry * ValidateIndexPointer (byte * ptr) {
-            var result = (IndexEntry *)ptr;
-
-            if (result->IsValid != 1)
-                throw new InvalidDataException();
-
-            /*
-            int iterations = 0;
-            Thread.MemoryBarrier();
-
-            while (result->IsValid != 1) {
-                if (iterations < 6)
-                    Thread.SpinWait(2 + (iterations * 5));
-                else
-                    Thread.Sleep(0);
-
-                Thread.MemoryBarrier();
-            }
-             */
-
-            return result;
-        }
-
         private StreamRange AccessIndex (long index) {
             long count = (IndexStream.Length / IndexEntry.Size);
 
@@ -384,7 +364,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 pivot = min + ((max - min) >> 1);
 
                 using (var indexRange = AccessIndex(pivot)) {
-                    var pEntry = ValidateIndexPointer(indexRange.Pointer);
+                    var pEntry = (IndexEntry *)indexRange.Pointer;
+                    if (pEntry->IsValid != 1)
+                        throw new InvalidDataException();
 
                     using (var keyRange = KeyStream.AccessRange(
                         pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
@@ -457,9 +439,11 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 var ptr = range.Pointer;
 
                 while (position >= 0) {
-                    IndexEntry* pSource = ValidateIndexPointer(ptr + position);
+                    IndexEntry* pSource = (IndexEntry *)(ptr + position);
                     IndexEntry* pDest = (IndexEntry*)(ptr + position + IndexEntry.Size);
 
+                    if (pSource->IsValid != 1)
+                        throw new InvalidDataException();
                     pSource->IsValid = 0;
 
                     *pDest = *pSource;
@@ -519,10 +503,10 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
                     if (writeMode == writeModeNew || writeMode == writeModeInsertNew) {
                         *pEntry = new IndexEntry {
-                            DataOffset = dataOffset,
-                            KeyOffset = keyOffset,
+                            DataOffset = (uint)dataOffset,
+                            KeyOffset = (uint)keyOffset,
                             DataLength = (uint)ms.Length,
-                            KeyLength = (uint)key.KeyData.Count,
+                            KeyLength = (ushort)key.KeyData.Count,
                             KeyType = key.OriginalTypeId,
                             IsValid = 0
                         };
@@ -542,7 +526,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
                     }
 
                     if (writeMode == writeModeNewData || writeMode == writeModeInsertNew) {
-                        pEntry->DataOffset = dataOffset;
+                        pEntry->DataOffset = (uint)dataOffset;
                         pEntry->DataLength = (uint)segment.Count;
                     }
 
@@ -569,7 +553,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
         private unsafe TangleKey GetKeyFromIndex (long index) {
             using (var indexRange = AccessIndex(index)) {
-                var pEntry = ValidateIndexPointer(indexRange.Pointer);
+                var pEntry = (IndexEntry *)indexRange.Pointer;
+                if (pEntry->IsValid != 1)
+                    throw new InvalidDataException();
 
                 using (var keyRange = KeyStream.AccessRange(
                     pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read

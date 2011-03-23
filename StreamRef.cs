@@ -17,11 +17,14 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 */
 
 using System;
+using System.Collections.Concurrent;
 using System.IO.MemoryMappedFiles;
 using System.Threading;
 using System.Runtime.InteropServices;
 using System.IO;
 using Microsoft.Win32.SafeHandles;
+using System.Collections.Generic;
+using Squared.Util;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -61,21 +64,22 @@ namespace Squared.Data.Mangler.Internal {
         public readonly long Offset, Size;
 
         private readonly SafeBuffer Buffer;
-        private readonly MemoryMappedViewAccessor View;
+        private readonly ViewCache.Ref ViewRef;
 
-        public StreamRange (StreamRef stream, MemoryMappedViewAccessor view, long offset, uint size) {
+        public StreamRange (StreamRef stream, ViewCache.Ref viewRef, long offset, uint size) {
             Stream = stream;
-            View = view;
+            ViewRef = viewRef;
             Offset = offset;
             Size = size;
-            Buffer = view.GetSafeBuffer();
+            Buffer = viewRef.View.GetSafeBuffer();
             Buffer.AcquirePointer(ref Pointer);
-            Pointer += view.GetPointerOffset();
+            Pointer += viewRef.View.GetPointerOffset();
+            Pointer += (offset - viewRef.Offset);
         }
 
         public void Dispose () {
             Buffer.ReleasePointer();
-            View.Dispose();
+            ViewRef.Dispose();
         }
     }
 
@@ -122,6 +126,119 @@ namespace Squared.Data.Mangler.Internal {
         public const uint FSCTL_SET_SPARSE = 0x900C4;
     }
 
+    internal class ViewCache : IDisposable {
+        public class Ref : IDisposable {
+            public readonly MemoryMappedViewAccessor View;
+            private readonly CacheEntry Entry;
+            
+            public Ref (CacheEntry entry) {
+                Entry = entry;
+                View = Entry.View;
+                Entry.AddRef();
+            }
+
+            public long Offset {
+                get {
+                    return Entry.Offset;
+                }
+            }
+
+            public uint Size {
+                get {
+                    return Entry.Size;
+                }
+            }
+
+            public void Dispose () {
+                Entry.RemoveRef();
+            }
+        }
+
+        public class CacheEntry : IDisposable {
+            public readonly long Offset;
+            public readonly uint Size;
+            public readonly MemoryMappedViewAccessor View;
+            public readonly SafeBuffer Buffer;
+            public int RefCount;
+
+            public CacheEntry (MemoryMappedViewAccessor view, long offset, uint size) {
+                View = view;
+                Offset = offset;
+                Size = size;
+                RefCount = 1;
+            }
+
+            public bool CanSatisfy (long offset, uint size) {
+                if (offset < Offset)
+                    return false;
+                if (offset + size > Offset + Size)
+                    return false;
+                return true;
+            }
+
+            public void AddRef () {
+                RefCount += 1;
+            }
+
+            public void RemoveRef () {
+                RefCount -= 1;
+                if (RefCount <= 0)
+                    Dispose();
+            }
+
+            public void Dispose () {
+                View.Dispose();
+            }
+        }
+
+        public readonly MemoryMappedFile File;
+        public readonly long FileLength;
+        public readonly uint Capacity;
+        private readonly Queue<CacheEntry> Cache = new Queue<CacheEntry>();
+
+        public ViewCache (MemoryMappedFile file, long fileLength, uint capacity = (uint)4) {
+            File = file;
+            FileLength = fileLength;
+            Capacity = capacity;
+        }
+
+        public Ref CreateView (long offset, uint size) {
+            foreach (var item in Cache)
+                if (item.CanSatisfy(offset, size))
+                    return new Ref(item);
+
+            if (Cache.Count > Capacity) {
+                CacheEntry ce = Cache.Dequeue();
+                ce.RemoveRef();
+            }
+
+            const uint pageSize = 1024 * 8;
+
+            var actualOffset = (offset / pageSize * pageSize);
+            if (actualOffset < 0)
+                actualOffset = 0;
+
+            var actualEnd = ((offset + size) + (pageSize - 1)) / pageSize * pageSize;
+            if (actualEnd < actualOffset)
+                actualEnd = actualOffset;
+            if (actualEnd >= FileLength)
+                actualEnd = FileLength;
+
+            var actualSize = (uint)(actualEnd - actualOffset);
+
+            var view = File.CreateViewAccessor(actualOffset, actualSize, MemoryMappedFileAccess.ReadWrite);
+
+            var newEntry = new CacheEntry(view, actualOffset, actualSize);
+            Cache.Enqueue(newEntry);
+            return new Ref(newEntry);
+        }
+
+        public void Dispose () {
+            while (Cache.Count > 0)
+                Cache.Dequeue().Dispose();
+        }
+    }
+
     internal class StreamRef : IDisposable {
         public static readonly uint HeaderSize = (uint)Marshal.SizeOf(typeof(StreamHeader));
         public const uint InitialCapacity = 32 * 1024;
@@ -130,6 +247,7 @@ namespace Squared.Data.Mangler.Internal {
         public readonly string Filename;
         public readonly string StreamName;
 
+        protected ViewCache Cache;
         protected MemoryMappedFile Handle;
         protected MemoryMappedViewAccessor HeaderView;
         protected FileStream Stream;
@@ -169,6 +287,7 @@ namespace Squared.Data.Mangler.Internal {
             );
             HeaderView = Handle.CreateViewAccessor(0, HeaderSize);
             StreamCapacity = capacity;
+            Cache = new ViewCache(Handle, StreamCapacity);
         }
 
         internal unsafe StreamHeaderRef AccessHeader () {
@@ -253,14 +372,15 @@ namespace Squared.Data.Mangler.Internal {
 
             EnsureCapacity(HeaderSize + offset + actualSize);
 
+            var viewRef = Cache.CreateView(actualBegin, actualSize);
+
             return new StreamRange(
-                this, Handle.CreateViewAccessor(
-                    actualBegin, actualSize, MemoryMappedFileAccess.ReadWrite
-                ), actualBegin, actualSize
+                this, viewRef, actualBegin, actualSize
             );
         }
 
         public void Dispose () {
+            Cache.Dispose();
             HeaderView.Flush();
             HeaderView.Dispose();
             Handle.Dispose();
