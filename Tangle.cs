@@ -249,17 +249,16 @@ For more information, see http://support.microsoft.com/kb/105763.";
             long spot = stream.AllocateSpace(entrySize);
 
             using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
-                range.View.Write<U>(0, ref value);
+                Unsafe<U>.StructureToPtr(ref value, range.GetPointer(), entrySize);
 
             return spot;
         }
 
         private static long StreamAppend (StreamRef stream, ArraySegment<byte> data) {
-            uint entrySize = (uint)data.Count;
-            long spot = stream.AllocateSpace(entrySize);
+            long spot = stream.AllocateSpace((uint)data.Count);
 
-            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
-                range.View.WriteArray(0, data.Array, data.Offset, data.Count);
+            using (var range = stream.AccessRange(spot, (uint)data.Count, MemoryMappedFileAccess.Write))
+                WriteBytes(range, 0, data);
 
             return spot;
         }
@@ -338,11 +337,15 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 return 0;
         }
 
-        private IndexEntry * ValidatePointer (AcquiredPointer ptr) {
-            var result = (IndexEntry *)ptr.Pointer;
-            int iterations = 0;
+        private IndexEntry * ValidatePointer (byte * ptr) {
+            var result = (IndexEntry *)ptr;
 
-            // Thread.MemoryBarrier();
+            if (result->IsValid != 1)
+                throw new InvalidDataException();
+
+            /*
+            int iterations = 0;
+            Thread.MemoryBarrier();
 
             while (result->IsValid != 1) {
                 if (iterations < 6)
@@ -352,6 +355,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
                 Thread.MemoryBarrier();
             }
+             */
 
             return result;
         }
@@ -379,15 +383,15 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
                 pivot = min + ((max - min) >> 1);
 
-                using (var indexRange = AccessIndex(pivot))
-                using (var rawPtr = indexRange.GetPointer()) {
-                    var pEntry = ValidatePointer(rawPtr);
+                using (var indexRange = AccessIndex(pivot)) {
+                    var pEntry = ValidatePointer(indexRange.GetPointer());
 
                     using (var keyRange = KeyStream.AccessRange(
                         pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
-                    ))
-                    using (var lhs = keyRange.GetPointer())
-                        delta = CompareKeys(lhs.Pointer, pEntry->KeyLength, pRhs, lengthRhs);
+                    )) {
+                        var pLhs = keyRange.GetPointer();
+                        delta = CompareKeys(pLhs, pEntry->KeyLength, pRhs, lengthRhs);
+                    }
 
                     if (delta == 0) {
                         resultEntry = *pEntry;
@@ -418,55 +422,52 @@ For more information, see http://support.microsoft.com/kb/105763.";
             return IndexEntryByKey(0, IndexCount, ref key, out resultEntry, out resultIndex);
         }
 
-        private void WriteNewPair (ref TangleKey key, MemoryStream bytes, out IndexEntry indexEntry) {
-            long dataPos;
-            uint dataLen;
-            dataLen = (uint)bytes.Length;
-            dataPos = StreamAppend(DataStream, bytes.GetSegment());
-
-            var keyPos = StreamAppend(KeyStream, key.KeyData);
-
-            indexEntry = new IndexEntry {
-                DataOffset = dataPos,
-                KeyOffset = keyPos,
-                DataLength = dataLen,
-                KeyLength = (uint)key.KeyData.Count,
-                KeyType = key.OriginalTypeId
-            };
-        }
-
         private void ReadValue (ref IndexEntry entry, out T value) {
-            byte[] buffer = new byte[entry.DataLength];
             using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength))
-                range.View.ReadArray(0, buffer, 0, buffer.Length);
-
-            using (var ms = new MemoryStream(buffer, false))
+            using (var ms = new UnmanagedMemoryStream(range.GetPointer(), entry.DataLength, entry.DataLength, FileAccess.Read))
                 Deserializer(ms, out value);
         }
 
-        private unsafe void ZeroBytes (StreamRange range, long offset, uint count) {
-            using (var ptr = range.GetPointer())
-            for (int i = 0; i < count; i++)
-                ptr.Pointer[i + offset] = 0;
+        private static void ReadBytes (StreamRange range, long offset, byte[] buffer, long bufferOffset, uint count) {
+            var ptr = range.GetPointer();
+            for (uint i = 0; i < count; i++)
+                buffer[i + bufferOffset] = ptr[i + offset];
         }
 
-        private unsafe void MoveEntriesForward (StreamRange indexRange, AcquiredPointer rawPtr) {
-            long position = indexRange.Size - IndexEntry.Size;
-            while (position >= IndexEntry.Size) {
-                var nextPosition = position - IndexEntry.Size;
+        private static void WriteBytes (StreamRange range, long offset, ArraySegment<byte> bytes) {
+            var ptr = range.GetPointer();
+            for (uint i = 0; i < bytes.Count; i++)
+                ptr[i + offset] = bytes.Array[i + bytes.Offset];
+        }
 
-                IndexEntry* pSource = (IndexEntry *)(rawPtr.Pointer + nextPosition);
-                IndexEntry* pDest = (IndexEntry*)(rawPtr.Pointer + position);
+        private static void ZeroBytes (StreamRange range, long offset, uint count) {
+            var ptr = range.GetPointer();
+            for (uint i = 0; i < count; i++)
+                ptr[i + offset] = 0;
+        }
 
-                pSource->IsValid = 0;
-                // Thread.MemoryBarrier();
+        private unsafe void MoveEntriesForward (long positionToClear, long emptyPosition) {
+            long size = emptyPosition - positionToClear + IndexEntry.Size;
+            long position = size - (IndexEntry.Size * 2);
 
-                *pDest = *pSource;
+            using (var range = IndexStream.AccessRange(
+                positionToClear, (uint)size,
+                MemoryMappedFileAccess.ReadWrite
+            )) {
+                var ptr = range.GetPointer();
 
-                pDest->IsValid = 1;
-                // Thread.MemoryBarrier();
+                while (position >= 0) {
+                    IndexEntry* pSource = (IndexEntry*)(ptr + position);
+                    IndexEntry* pDest = (IndexEntry*)(ptr + position + IndexEntry.Size);
 
-                position = nextPosition;
+                    pSource->IsValid = 0;
+
+                    *pDest = *pSource;
+
+                    pDest->IsValid = 1;
+
+                    position -= IndexEntry.Size;
+                }
             }
         }
 
@@ -478,28 +479,24 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
             int writeMode;
             IndexEntry indexEntry;
-            long offset, relocationEndpoint;
+            long offset, dataOffset = 0, keyOffset = 0;
+            long positionToClear = 0, emptyPosition = 0;
 
             using (var ms = new MemoryStream()) {
                 Serializer(ref value, ms);
 
-                uint accessSize = IndexEntry.Size;
-                long index;
-                if (!IndexEntryByKey(0, IndexCount, ref key, out indexEntry, out index)) {
+                long index, count = IndexCount;
+                if (!IndexEntryByKey(0, count, ref key, out indexEntry, out index)) {
                     offset = index * IndexEntry.Size;
-                    long newSpot = IndexStream.AllocateSpace(IndexEntry.Size);
+                    var newSpot = IndexStream.AllocateSpace(IndexEntry.Size);
 
-                    if (offset < newSpot) {
-                        var sz = newSpot - offset + IndexEntry.Size;
-                        if (sz >= uint.MaxValue)
-                            throw new InvalidDataException("Index too large");
-
-                        accessSize = (uint)sz;
-                        relocationEndpoint = newSpot;
+                    if (index < count) {
                         writeMode = writeModeInsertNew;
+                        positionToClear = offset;
+                        emptyPosition = newSpot;
                     } else {
-                        offset = newSpot;
                         writeMode = writeModeNew;
+                        offset = newSpot;
                     }
                 } else if (ms.Length > indexEntry.DataLength) {
                     offset = index * IndexEntry.Size;
@@ -509,43 +506,57 @@ For more information, see http://support.microsoft.com/kb/105763.";
                     writeMode = writeModeReplaceData;
                 }
 
-                using (var indexRange = IndexStream.AccessRange(offset, accessSize, MemoryMappedFileAccess.ReadWrite))
-                using (var rawPtr = indexRange.GetPointer()) {
-                    var pEntry = (IndexEntry*)rawPtr.Pointer;
+                if (writeMode == writeModeInsertNew || writeMode == writeModeNew)
+                    keyOffset = KeyStream.AllocateSpace((uint)key.KeyData.Count);
+                if (writeMode != writeModeReplaceData)
+                    dataOffset = DataStream.AllocateSpace((uint)ms.Length);
 
-                    if (writeMode == writeModeInsertNew)
-                        MoveEntriesForward(indexRange, rawPtr);
+                if (writeMode == writeModeInsertNew)
+                    MoveEntriesForward(positionToClear, emptyPosition);
+
+                using (var indexRange = IndexStream.AccessRange(offset, IndexEntry.Size, MemoryMappedFileAccess.ReadWrite)) {
+                    var pEntry = (IndexEntry *)indexRange.GetPointer();
 
                     if (writeMode == writeModeNew || writeMode == writeModeInsertNew) {
-                        WriteNewPair(ref key, ms, out *pEntry);
+                        *pEntry = new IndexEntry {
+                            DataOffset = dataOffset,
+                            KeyOffset = keyOffset,
+                            DataLength = (uint)ms.Length,
+                            KeyLength = (uint)key.KeyData.Count,
+                            KeyType = key.OriginalTypeId,
+                            IsValid = 0
+                        };
+
+                        using (var keyRange = KeyStream.AccessRange(pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Write))
+                            WriteBytes(keyRange, 0, key.KeyData);
+
                     } else {
-                        // Thread.MemoryBarrier();
                         pEntry->IsValid = 0;
-                        // Thread.MemoryBarrier();
                     }
 
                     var segment = ms.GetSegment();
-                    if (writeMode == writeModeNewData || writeMode == writeModeInsertNew) {
+
+                    if (writeMode == writeModeInsertNew) {
                         using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write))
                             ZeroBytes(range, 0, pEntry->DataLength);
+                    }
 
-                        pEntry->DataOffset = StreamAppend(DataStream, segment);
-                        pEntry->DataLength = (uint)segment.Count;
-                    } else {
-                        using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write)) {
-                            range.View.WriteArray(0, segment.Array, segment.Offset, segment.Count);
-
-                            var bytesToZero = (uint)(pEntry->DataLength - segment.Count);
-                            if (bytesToZero > 0)
-                                ZeroBytes(range, segment.Count, (uint)bytesToZero);
-                        }
-
+                    if (writeMode == writeModeNewData || writeMode == writeModeInsertNew) {
+                        pEntry->DataOffset = dataOffset;
                         pEntry->DataLength = (uint)segment.Count;
                     }
 
-                    // Thread.MemoryBarrier();
+                    using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write)) {
+                        WriteBytes(range, 0, segment);
+
+                        var bytesToZero = (uint)(pEntry->DataLength - segment.Count);
+                        if (bytesToZero > 0)
+                            ZeroBytes(range, segment.Count, (uint)bytesToZero);
+                    }
+
+                    pEntry->DataLength = (uint)segment.Count;
+
                     pEntry->IsValid = 1;
-                    // Thread.MemoryBarrier();
                 }
             }
 
@@ -557,15 +568,14 @@ For more information, see http://support.microsoft.com/kb/105763.";
         }
 
         private unsafe TangleKey GetKeyFromIndex (long index) {
-            using (var indexRange = AccessIndex(index))
-            using (var ptr = indexRange.GetPointer()) {
-                var pEntry = ValidatePointer(ptr);
+            using (var indexRange = AccessIndex(index)) {
+                var pEntry = ValidatePointer(indexRange.GetPointer());
 
                 using (var keyRange = KeyStream.AccessRange(
                     pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
                 )) {
                     var array = new byte[pEntry->KeyLength];
-                    keyRange.View.ReadArray<byte>(0, array, 0, (int)pEntry->KeyLength);
+                    ReadBytes(keyRange, 0, array, 0, pEntry->KeyLength); 
 
                     return new TangleKey(array, pEntry->KeyType);
                 }
@@ -617,7 +627,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 var size = (int)stream.Length;
                 var buffer = new byte[size];
                 using (var access = stream.AccessRange(0, (uint)size, MemoryMappedFileAccess.Read))
-                    access.View.ReadArray(0, buffer, 0, size);
+                    ReadBytes(access, 0, buffer, 0, (uint)size);
                 fs.Write(buffer, 0, size);
             }
         }

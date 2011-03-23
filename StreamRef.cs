@@ -22,8 +22,6 @@ using System.Threading;
 using System.Runtime.InteropServices;
 using System.IO;
 using Microsoft.Win32.SafeHandles;
-using System.Reflection;
-using System.Linq.Expressions;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -55,44 +53,55 @@ namespace Squared.Data.Mangler.Internal {
         }
     }
 
-    internal class StreamRange : IDisposable {
+    internal unsafe class StreamRange : IDisposable {
         public readonly StreamRef Stream;
-        public readonly MemoryMappedViewAccessor View;
-        public readonly uint Size;
 
-        public StreamRange (StreamRef stream, MemoryMappedViewAccessor view, uint size) {
+        private readonly byte* Pointer;
+        private readonly long PointerOffset;
+
+        public readonly long Offset, Size;
+
+        private readonly SafeBuffer Buffer;
+        private readonly MemoryMappedViewAccessor View;
+
+        public StreamRange (StreamRef stream, MemoryMappedViewAccessor view, long offset, uint size) {
             Stream = stream;
             View = view;
+            Offset = offset;
             Size = size;
+            PointerOffset = view.GetPointerOffset();
+            Buffer = view.GetSafeBuffer();
+            Buffer.AcquirePointer(ref Pointer);
         }
 
-        public AcquiredPointer GetPointer () {
-            return View.GetPointer();
+        public byte* GetPointer () {
+            return Pointer + PointerOffset;
         }
 
         public void Dispose () {
+            Buffer.ReleasePointer();
             View.Dispose();
         }
     }
 
     [Flags]
     internal enum NativeFileAccess : uint {
-        GenericRead  = 0x80000000,
+        GenericRead = 0x80000000,
         GenericWrite = 0x40000000
     }
 
     [Flags]
     internal enum NativeFileFlags : uint {
-        WriteThrough     = 0x80000000,
-        Overlapped       = 0x40000000,
-        NoBuffering      = 0x20000000,
-        RandomAccess     = 0x10000000,
-        SequentialScan   = 0x8000000,
-        DeleteOnClose    = 0x4000000,
-        BackupSemantics  = 0x2000000,
-        PosixSemantics   = 0x1000000,
+        WriteThrough = 0x80000000,
+        Overlapped = 0x40000000,
+        NoBuffering = 0x20000000,
+        RandomAccess = 0x10000000,
+        SequentialScan = 0x8000000,
+        DeleteOnClose = 0x4000000,
+        BackupSemantics = 0x2000000,
+        PosixSemantics = 0x1000000,
         OpenReparsePoint = 0x200000,
-        OpenNoRecall     = 0x100000
+        OpenNoRecall = 0x100000
     }
 
     internal static class Native {
@@ -159,7 +168,7 @@ namespace Squared.Data.Mangler.Internal {
                 capacity = Stream.Length;
 
             Handle = MemoryMappedFile.CreateFromFile(
-                Stream, null, capacity, 
+                Stream, null, capacity,
                 MemoryMappedFileAccess.ReadWrite,
                 null, HandleInheritability.None, false
             );
@@ -184,9 +193,7 @@ namespace Squared.Data.Mangler.Internal {
             //  but this is simple and predictable.
             var newCapacity = (capacity + GrowthRate - 1) / GrowthRate * GrowthRate;
 
-            HeaderView.Flush();
-            HeaderView.Dispose();
-            Handle.Dispose();
+            Dispose();
 
             CreateHandles(newCapacity);
         }
@@ -246,141 +253,22 @@ namespace Squared.Data.Mangler.Internal {
         /// <param name="offset">The offset within the stream, relative to the end of the stream header.</param>
         /// <param name="size">The size of the range to access, in bytes.</param>
         public StreamRange AccessRange (long offset, uint size, MemoryMappedFileAccess access = MemoryMappedFileAccess.ReadWrite) {
-            // Before acquiring a read lock, check to see whether we need to grow the
-            //  database first. This check acquires locks of its own.
-            EnsureCapacity(HeaderSize + offset + size);
+            long actualBegin = offset + HeaderSize;
+            uint actualSize = size;
 
-            StreamRange result;
+            EnsureCapacity(HeaderSize + offset + actualSize);
 
-            result = new StreamRange(
+            return new StreamRange(
                 this, Handle.CreateViewAccessor(
-                    offset + HeaderSize, size, access
-                ), size
+                    actualBegin, actualSize, MemoryMappedFileAccess.ReadWrite
+                ), actualBegin, actualSize
             );
-
-            return result;
         }
 
         public void Dispose () {
             HeaderView.Flush();
             HeaderView.Dispose();
             Handle.Dispose();
-        }
-    }
-
-    public unsafe struct AcquiredPointer : IDisposable {
-        public readonly SafeBuffer Buffer;
-        public readonly byte* Pointer;
-
-        public AcquiredPointer (MemoryMappedViewAccessor accessor, long offset = 0) {
-            Buffer = accessor.GetSafeBuffer();
-            Pointer = null;
-            Buffer.AcquirePointer(ref Pointer);
-            Pointer += accessor.GetPointerOffset();
-        }
-
-        public void Dispose () {
-            Buffer.ReleasePointer();
-        }
-    }
-
-    delegate SafeBuffer GetSafeBufferFunc (UnmanagedMemoryAccessor accessor);
-    delegate Int64 GetPointerOffsetFunc (MemoryMappedViewAccessor accessor);
-
-    public static class InternalExtensions {
-        private static readonly GetSafeBufferFunc _GetSafeBuffer;
-        private static readonly GetPointerOffsetFunc _GetPointerOffset;
-
-        static InternalExtensions () {
-            _GetSafeBuffer = CreateGetSafeBuffer();
-            _GetPointerOffset = CreateGetPointerOffset();
-        }
-
-        // To manipulate structures directly in mapped memory, we have
-        //  to be able to get a pointer to the mapping. While this is possible,
-        //  the classes for using mapped files do not expose a way to do this
-        //  directly. So, we pull out the SafeBuffer object associated with the
-        //  mapping and then use a public method to get a pointer.
-        // Kind of nasty, but what else can you do?
-        private static GetSafeBufferFunc CreateGetSafeBuffer () {
-            var t = typeof(UnmanagedMemoryAccessor);
-            var field = t.GetField(
-                "_buffer",
-                System.Reflection.BindingFlags.NonPublic |
-                System.Reflection.BindingFlags.Instance
-            );
-            if (field == null)
-                throw new ArgumentNullException();
-
-            var argument = Expression.Parameter(t, "accessor");
-            var expr = Expression.Field(argument, field);
-
-            return Expression.Lambda<GetSafeBufferFunc>(
-                expr, "GetSafeBuffer", new[] { argument }
-            ).Compile();
-        }
-
-        // When we get a pointer from a SafeBuffer associated with a mapped
-        //  view, the pointer is going to be wrong unless the offset into
-        //  the file that we mapped was aligned with a page boundary.
-        // So, once we get the pointer, we have to find out the alignment
-        //  necessary to line it up with a page, and add that to the pointer
-        //  so that we are looking at the start of the mapping, instead of
-        //  the start of the page containing the mapping.
-        // This is a bit messier than the SafeBuffer hack, because one of the
-        //  relevant types - MemoryMappedView - is internal.
-        private static GetPointerOffsetFunc CreateGetPointerOffset () {
-            var tAccessor = typeof(MemoryMappedViewAccessor);
-            var tView = tAccessor.Assembly.GetType(
-                "System.IO.MemoryMappedFiles.MemoryMappedView", true
-            );
-
-            var fieldView = tAccessor.GetField(
-                "m_view",
-                System.Reflection.BindingFlags.NonPublic |
-                System.Reflection.BindingFlags.Instance
-            );
-            if (fieldView == null)
-                throw new ArgumentNullException();
-
-            var fieldOffset = tView.GetField(
-                "m_pointerOffset",
-                System.Reflection.BindingFlags.NonPublic |
-                System.Reflection.BindingFlags.Instance
-            );
-            if (fieldOffset == null)
-                throw new ArgumentNullException();
-
-            var argument = Expression.Parameter(tAccessor, "accessor");
-            var expr = Expression.Field(
-                Expression.Field(argument, fieldView), fieldOffset
-            );
-
-            return Expression.Lambda<GetPointerOffsetFunc>(
-                expr, "GetPointerOffset", new[] { argument }
-            ).Compile();
-        }
-        
-        internal static SafeBuffer GetSafeBuffer (this UnmanagedMemoryAccessor accessor) {
-            var buffer = _GetSafeBuffer(accessor);
-            if (buffer == null)
-                throw new InvalidDataException();
-            return buffer;
-        }
-
-        internal static AcquiredPointer GetPointer (this MemoryMappedViewAccessor accessor) {
-            return new AcquiredPointer(accessor);
-        }
-
-        internal static Int64 GetPointerOffset (this MemoryMappedViewAccessor accessor) {
-            return _GetPointerOffset(accessor);
-        }
-
-        internal static ArraySegment<byte> GetSegment (this MemoryStream stream) {
-            if (stream.Length >= int.MaxValue)
-                throw new InvalidDataException();
-
-            return new ArraySegment<byte>(stream.GetBuffer(), 0, (int)stream.Length);
         }
     }
 }

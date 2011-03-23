@@ -115,7 +115,7 @@ namespace Squared.Data.Mangler.Tests {
 
         [Test]
         public void CanWriteLotsOfValuesSequentially () {
-            const int numValues = 10000;
+            const int numValues = 2000;
 
             long startTime = Time.Ticks;
             Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues));
