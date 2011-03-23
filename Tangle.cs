@@ -19,6 +19,7 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Squared.Data.Mangler.Serialization;
 using Squared.Task;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -46,15 +47,6 @@ namespace Squared.Data.Mangler.Internal {
 }
 
 namespace Squared.Data.Mangler {
-    /// <summary>
-    /// Handles converting a single value from the Tangle into raw binary for storage.
-    /// </summary>
-    public delegate void TangleSerializer<T> (ref T input, Stream output);
-    /// <summary>
-    /// Handles converting a single stored value from raw binary back into its native format, when the Tangle is loading it from storage.
-    /// </summary>
-    public delegate void TangleDeserializer<T> (Stream input, out T output);
-
     public struct TangleKey {
         private static readonly Dictionary<byte, Type> TypeIdToType = new Dictionary<byte, Type>();
         private static readonly Dictionary<Type, byte> TypeToTypeId = new Dictionary<Type, byte>();
@@ -151,6 +143,22 @@ namespace Squared.Data.Mangler {
             return new TangleKey(key);
         }
 
+        public static implicit operator TangleKey (uint key) {
+            return new TangleKey(key);
+        }
+
+        public static implicit operator TangleKey (int key) {
+            return new TangleKey(key);
+        }
+
+        public static implicit operator TangleKey (ulong key) {
+            return new TangleKey(key);
+        }
+
+        public static implicit operator TangleKey (long key) {
+            return new TangleKey(key);
+        }
+
         public override string ToString () {
             var value = Value;
 
@@ -174,21 +182,6 @@ namespace Squared.Data.Mangler {
     /// </summary>
     /// <typeparam name="T">The type of the value stored within the tangle.</typeparam>
     public unsafe class Tangle<T> : IDisposable {
-        public static TangleSerializer<T> DefaultSerializer;
-        public static TangleDeserializer<T> DefaultDeserializer;
-
-        static Tangle () {
-            DefaultDeserializer = (Stream i, out T o) => {
-                var ser = new XmlSerializer(typeof(T));
-                var temp = ser.Deserialize(i);
-                o = (T)temp;
-            };
-            DefaultSerializer = (ref T i, Stream o) => {
-                var ser = new XmlSerializer(typeof(T));
-                ser.Serialize(o, i);
-            };
-        }
-
         public const string ExplanatoryPlaceholderText =
 @"This is a DataMangler database. 
 All the actual data is stored in NTFS streams attached to this file.
@@ -198,10 +191,11 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
         public const uint CurrentFormatVersion = 1;
 
-        public readonly string Filename;
+        public readonly bool OwnsStorage;
+        public readonly StreamSource Storage;
         public readonly TaskScheduler Scheduler;
-        public readonly TangleSerializer<T> Serializer;
-        public readonly TangleDeserializer<T> Deserializer;
+        public readonly Serializer<T> Serializer;
+        public readonly Deserializer<T> Deserializer;
 
         protected readonly ReaderWriterLockSlim IndexLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
 
@@ -217,20 +211,22 @@ For more information, see http://support.microsoft.com/kb/105763.";
         private readonly StreamRef DataStream;
 
         public Tangle (
-            TaskScheduler scheduler, string filename, 
-            TangleSerializer<T> serializer = null, 
-            TangleDeserializer<T> deserializer = null
+            TaskScheduler scheduler, 
+            StreamSource storage, 
+            Serializer<T> serializer = null, 
+            Deserializer<T> deserializer = null,
+            bool ownsStorage = true
         ) {
             Scheduler = scheduler;
-            Filename = filename;
-            Serializer = serializer ?? DefaultSerializer;
-            Deserializer = deserializer ?? DefaultDeserializer;
+            Storage = storage;
+            OwnsStorage = ownsStorage;
 
-            File.WriteAllText(Filename, ExplanatoryPlaceholderText);
+            Serializer = serializer ?? Defaults<T>.Serializer;
+            Deserializer = deserializer ?? Defaults<T>.Deserializer;
 
-            IndexStream = new StreamRef(Filename, "index");
-            KeyStream = new StreamRef(Filename, "keys");
-            DataStream = new StreamRef(Filename, "data");
+            IndexStream = Storage.Open("index");
+            KeyStream = Storage.Open("keys");
+            DataStream = Storage.Open("data");
 
             VersionCheck(IndexStream);
             VersionCheck(KeyStream);
@@ -618,16 +614,13 @@ For more information, see http://support.microsoft.com/kb/105763.";
             }
         }
 
-        public IEnumerator<object> Dispose () {
+        public void Dispose () {
             IndexStream.Dispose();
             DataStream.Dispose();
             KeyStream.Dispose();
 
-            yield break;
-        }
-
-        void IDisposable.Dispose () {
-            Scheduler.WaitFor(Dispose());
+            if (OwnsStorage)
+                Storage.Dispose();
         }
     }
 }

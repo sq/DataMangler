@@ -115,15 +115,19 @@ namespace Squared.Data.Mangler.Internal {
             IntPtr template
         );
 
-        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        public static extern bool DeviceIoControl (
-            SafeFileHandle handle, uint dwIoControlCode,
-            IntPtr lpInBuffer, uint nInBufferSize,
-            IntPtr lpOutBuffer, uint nOutBufferSize,
-            out uint lpBytesReturned, IntPtr lpOverlapped
-        );
-
-        public const uint FSCTL_SET_SPARSE = 0x900C4;
+        public static FileStream OpenAlternateStream (string filename, string streamName) {
+            const string prefix = @"\\?\";
+            var path = String.Format("{0}{1}:{2}", prefix, filename, streamName);
+            var handle = Native.CreateFile(
+                path,
+                NativeFileAccess.GenericRead | NativeFileAccess.GenericWrite,
+                FileShare.None, IntPtr.Zero, FileMode.OpenOrCreate,
+                NativeFileFlags.RandomAccess, IntPtr.Zero
+            );
+            if (handle.IsInvalid || handle.IsClosed)
+                throw new IOException("Could not open stream " + path);
+            return new FileStream(handle, FileAccess.ReadWrite);
+        }
     }
 
     internal class ViewCache : IDisposable {
@@ -158,7 +162,6 @@ namespace Squared.Data.Mangler.Internal {
             public readonly long Offset;
             public readonly uint Size;
             public readonly MemoryMappedViewAccessor View;
-            public readonly SafeBuffer Buffer;
             public int RefCount;
 
             public CacheEntry (MemoryMappedViewAccessor view, long offset, uint size) {
@@ -244,46 +247,30 @@ namespace Squared.Data.Mangler.Internal {
         public const uint InitialCapacity = 32 * 1024;
         public const uint GrowthRate = 64 * 1024;
 
-        public readonly string Filename;
-        public readonly string StreamName;
-
         protected ViewCache Cache;
         protected MemoryMappedFile Handle;
         protected MemoryMappedViewAccessor HeaderView;
-        protected FileStream Stream;
+
+        public readonly FileStream NativeStream;
+        public readonly bool OwnsStream;
 
         protected long StreamCapacity;
 
-        public StreamRef (string filename, string streamName) {
-            Filename = filename;
-            StreamName = streamName;
+        public StreamRef (FileStream nativeStream, bool ownsStream = true) {
+            NativeStream = nativeStream;
+            OwnsStream = ownsStream;
 
             CreateHandles(InitialCapacity);
         }
 
-        protected FileStream OpenAlternateStream (string filename, string streamName) {
-            const string prefix = @"\\?\";
-            var path = String.Format("{0}{1}:{2}", prefix, filename, streamName);
-            var handle = Native.CreateFile(
-                path,
-                NativeFileAccess.GenericRead | NativeFileAccess.GenericWrite,
-                FileShare.None, IntPtr.Zero, FileMode.OpenOrCreate,
-                NativeFileFlags.RandomAccess, IntPtr.Zero
-            );
-            if (handle.IsInvalid || handle.IsClosed)
-                throw new IOException("Could not open stream " + path);
-            return new FileStream(handle, FileAccess.ReadWrite);
-        }
-
         protected void CreateHandles (long capacity) {
-            Stream = OpenAlternateStream(Filename, StreamName);
-            if (Stream.Length > capacity)
-                capacity = Stream.Length;
+            if (NativeStream.Length > capacity)
+                capacity = NativeStream.Length;
 
             Handle = MemoryMappedFile.CreateFromFile(
-                Stream, null, capacity,
+                NativeStream, null, capacity,
                 MemoryMappedFileAccess.ReadWrite,
-                null, HandleInheritability.None, false
+                null, HandleInheritability.None, true
             );
             HeaderView = Handle.CreateViewAccessor(0, HeaderSize);
             StreamCapacity = capacity;
@@ -307,7 +294,7 @@ namespace Squared.Data.Mangler.Internal {
             //  but this is simple and predictable.
             var newCapacity = (capacity + GrowthRate - 1) / GrowthRate * GrowthRate;
 
-            Dispose();
+            DisposeViews();
 
             CreateHandles(newCapacity);
         }
@@ -357,7 +344,7 @@ namespace Squared.Data.Mangler.Internal {
 
         public long Capacity {
             get {
-                return Math.Max(StreamCapacity, Stream.Length);
+                return Math.Max(StreamCapacity, NativeStream.Length);
             }
         }
 
@@ -379,11 +366,26 @@ namespace Squared.Data.Mangler.Internal {
             );
         }
 
+        private void DisposeViews () {
+            if (Cache != null) {
+                Cache.Dispose();
+                Cache = null;
+            }
+            if (HeaderView != null) {
+                HeaderView.Flush();
+                HeaderView.Dispose();
+                HeaderView = null;
+            }
+            if (Handle != null) {
+                Handle.Dispose();
+                Handle = null;
+            }
+        }
+
         public void Dispose () {
-            Cache.Dispose();
-            HeaderView.Flush();
-            HeaderView.Dispose();
-            Handle.Dispose();
+            DisposeViews();
+            if (OwnsStream)
+                NativeStream.Dispose();
         }
     }
 }

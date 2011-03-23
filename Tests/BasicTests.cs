@@ -26,35 +26,52 @@ using System.IO;
 using Squared.Util;
 
 namespace Squared.Data.Mangler.Tests {
-    [TestFixture]
-    public class BasicTests {
-        public const string TestFile = @"C:\test.dmdb";
-
+    public class BasicTestFixture {
+        public string TestFile;
+        public StreamSource Storage;
         public TaskScheduler Scheduler;
+
+        [SetUp]
+        public virtual void SetUp () {
+            Scheduler = new TaskScheduler();
+
+            TestFile = Path.GetTempFileName();
+            Storage = new AlternateStreamSource(TestFile);
+        }
+
+        [TearDown]
+        public virtual void TearDown () {
+            Scheduler.Dispose();
+            File.Delete(TestFile);
+        }
+    }
+
+    [TestFixture]
+    public class BasicTests : BasicTestFixture {
         public Tangle<int> Tangle;
 
         [SetUp]
-        public void SetUp () {
-            Scheduler = new TaskScheduler();
-            if (File.Exists(TestFile))
-                File.Delete(TestFile);
+        public override void SetUp () {
+            base.SetUp();
 
             Tangle = new Tangle<int>(
-                Scheduler, TestFile, 
-                (ref int i, Stream o) => o.Write(BitConverter.GetBytes(i), 0, 4),
-                (Stream i, out int o) => {
+                Scheduler, Storage, 
+                serializer: (ref int i, Stream o) => 
+                    o.Write(BitConverter.GetBytes(i), 0, 4),
+                deserializer: (Stream i, out int o) => {
                     var bytes = new byte[4];
                     i.Read(bytes, 0, bytes.Length);
                     o = BitConverter.ToInt32(bytes, 0);
-                }
+                },
+                ownsStorage: true
             );
         }
 
         [TearDown]
-        public void TearDown () {
-            Tangle.ExportStreams(@"C:\test.dmdb_streams\");
-            Scheduler.WaitFor(Tangle.Dispose());
-            Scheduler.Dispose();
+        public override void TearDown () {
+            // Tangle.ExportStreams(@"C:\dm_streams\");
+            Tangle.Dispose();
+            base.TearDown();
         }
 
         [Test]
@@ -114,12 +131,8 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         protected IEnumerator<object> WriteLotsOfValues (Tangle<int> tangle, int numIterations) {
-            TangleKey key;
-
-            for (int i = 0; i < numIterations; i++) {
-                key = new TangleKey(i);
-                yield return tangle.Set(key, i);
-            }
+            for (int i = 0; i < numIterations; i++)
+                yield return tangle.Set(i, i);
         }
 
         [Test]
@@ -145,8 +158,7 @@ namespace Squared.Data.Mangler.Tests {
 
         protected IEnumerator<object> CheckLotsOfValues (Tangle<int> tangle, int numIterations) {
             for (int i = 0; i < numIterations; i++) {
-                var key = new TangleKey(i);
-                var f = tangle.Get(key);
+                var f = tangle.Get(i);
                 yield return f;
                 Assert.AreEqual(i, f.Result);
             }
