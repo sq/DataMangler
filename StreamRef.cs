@@ -61,10 +61,15 @@ namespace Squared.Data.Mangler.Internal {
     internal class StreamRange : IDisposable {
         public readonly StreamRef Stream;
         public readonly MemoryMappedViewAccessor View;
+        public readonly uint Size;
 
-        public StreamRange (StreamRef stream, MemoryMappedViewAccessor view) {
+        private readonly bool HoldingLock;
+
+        public StreamRange (StreamRef stream, MemoryMappedViewAccessor view, uint size, bool holdingLock) {
             Stream = stream;
             View = view;
+            Size = size;
+            HoldingLock = holdingLock;
         }
 
         public AcquiredPointer GetPointer () {
@@ -73,7 +78,7 @@ namespace Squared.Data.Mangler.Internal {
 
         public void Dispose () {
             View.Dispose();
-            Stream.OnRangeReleased();
+            Stream.OnRangeReleased(HoldingLock);
         }
     }
 
@@ -181,13 +186,15 @@ namespace Squared.Data.Mangler.Internal {
                 MemoryMappedFileAccess.ReadWrite,
                 null, HandleInheritability.None, false
             );
-            HeaderView = Handle.CreateViewAccessor(0, Marshal.SizeOf(typeof(StreamHeader)));
+            HeaderView = Handle.CreateViewAccessor(0, HeaderSize);
             StreamCapacity = capacity;
         }
 
-        internal void OnRangeReleased () {
-            Interlocked.Decrement(ref OutstandingRangeLocks);
-            Lock.ExitReadLock();
+        internal void OnRangeReleased (bool holdingLock) {
+            if (holdingLock) {
+                Interlocked.Decrement(ref OutstandingRangeLocks);
+                Lock.ExitReadLock();
+            }
         }
 
         protected void OnHeaderReleased () {
@@ -292,25 +299,31 @@ namespace Squared.Data.Mangler.Internal {
         /// </summary>
         /// <param name="offset">The offset within the stream, relative to the end of the stream header.</param>
         /// <param name="size">The size of the range to access, in bytes.</param>
-        public StreamRange AccessRange (long offset, uint size, MemoryMappedFileAccess access = MemoryMappedFileAccess.ReadWrite) {
+        public StreamRange AccessRange (long offset, uint size, MemoryMappedFileAccess access = MemoryMappedFileAccess.ReadWrite, bool acquireLock = true) {
             // Before acquiring a read lock, check to see whether we need to grow the
             //  database first. This check acquires locks of its own.
             EnsureCapacity(HeaderSize + offset + size);
 
             StreamRange result;
 
-            Lock.EnterReadLock();
+            if (acquireLock)
+                Lock.EnterReadLock();
+
             try {
                 result = new StreamRange(
                     this, Handle.CreateViewAccessor(
                         offset + HeaderSize, size, access
-                    )
+                    ), size, acquireLock
                 );
             } catch {
-                Lock.ExitReadLock();
+                if (acquireLock)
+                    Lock.ExitReadLock();
                 throw;
             }
-            Interlocked.Increment(ref OutstandingRangeLocks);
+
+            if (acquireLock)
+                Interlocked.Increment(ref OutstandingRangeLocks);
+
             return result;
         }
 
@@ -346,11 +359,11 @@ namespace Squared.Data.Mangler.Internal {
     delegate SafeBuffer GetSafeBufferFunc (UnmanagedMemoryAccessor accessor);
     delegate Int64 GetPointerOffsetFunc (MemoryMappedViewAccessor accessor);
 
-    public static class UnmanagedMemoryAccesorExtensions {
+    public static class InternalExtensions {
         private static readonly GetSafeBufferFunc _GetSafeBuffer;
         private static readonly GetPointerOffsetFunc _GetPointerOffset;
 
-        static UnmanagedMemoryAccesorExtensions () {
+        static InternalExtensions () {
             _GetSafeBuffer = CreateGetSafeBuffer();
             _GetPointerOffset = CreateGetPointerOffset();
         }
@@ -433,6 +446,13 @@ namespace Squared.Data.Mangler.Internal {
 
         internal static Int64 GetPointerOffset (this MemoryMappedViewAccessor accessor) {
             return _GetPointerOffset(accessor);
+        }
+
+        internal static ArraySegment<byte> GetSegment (this MemoryStream stream) {
+            if (stream.Length >= int.MaxValue)
+                throw new InvalidDataException();
+
+            return new ArraySegment<byte>(stream.GetBuffer(), 0, (int)stream.Length);
         }
     }
 }

@@ -23,6 +23,7 @@ using System.Text;
 using NUnit.Framework;
 using Squared.Task;
 using System.IO;
+using Squared.Util;
 
 namespace Squared.Data.Mangler.Tests {
     [TestFixture]
@@ -79,9 +80,32 @@ namespace Squared.Data.Mangler.Tests {
             Assert.AreEqual(3, Scheduler.WaitFor(Tangle.Get("hello")));
         }
 
-        protected IEnumerator<object> WriteLotsOfValues (Tangle<int> tangle, int numIterations) {
+        [Test]
+        public void InsertInSequentialOrder () {
+            Scheduler.WaitFor(Tangle.Set("aa", 4));
+            Scheduler.WaitFor(Tangle.Set("ea", 3));
+            Scheduler.WaitFor(Tangle.Set("qa", 2));
+            Scheduler.WaitFor(Tangle.Set("za", 1));
+
+            Assert.AreEqual(
+                new object[] { "aa", "ea", "qa", "za" }, (from k in Tangle.Keys select k.Value).ToArray()
+            );
+        }
+
+        [Test]
+        public void InsertInReverseOrder () {
+            Scheduler.WaitFor(Tangle.Set("za", 4));
+            Scheduler.WaitFor(Tangle.Set("qa", 3));
+            Scheduler.WaitFor(Tangle.Set("ea", 2));
+            Scheduler.WaitFor(Tangle.Set("aa", 1));
+
+            Assert.AreEqual(
+                new object[] { "aa", "ea", "qa", "za" }, (from k in Tangle.Keys select k.Value).ToArray()
+            );
+        }
+
+        protected IEnumerator<object> WriteLotsOfValues (Tangle<int> tangle, int numIterations, int batchSize) {
             var futures = new List<IFuture>();
-            const int batchSize = 4;
 
             for (int i = 0; i < numIterations; i++) {
                 var key = new TangleKey(i);
@@ -96,12 +120,32 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [Test]
-        public void CanWriteLotsOfValuesQuickly () {
-            const int numValues = 5000;
-            Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues));
-            var rng = new Random();
-            for (int i = 0; i < numValues; i += rng.Next(5, 70)) {
-                Assert.AreEqual(i, Scheduler.WaitFor(Tangle.Get(new TangleKey(i))));
+        public void CanWriteLotsOfValuesSequentially () {
+            const int numValues = 10000;
+
+            long startTime = Time.Ticks;
+            Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues, 1));
+            decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "Wrote {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                numValues, elapsedSeconds, numValues / elapsedSeconds
+            );
+
+            startTime = Time.Ticks;
+            Scheduler.WaitFor(CheckLotsOfValues(Tangle, numValues));
+            elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "Read {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                numValues, elapsedSeconds, numValues / elapsedSeconds
+            );
+        }
+
+        protected IEnumerator<object> CheckLotsOfValues (Tangle<int> tangle, int numIterations) {
+            for (int i = 0; i < numIterations; i++) {
+                var key = new TangleKey(i);
+                var f = tangle.Get(key);
+                yield return f;
+                Assert.AreEqual(i, f.Result);
             }
         }
     }

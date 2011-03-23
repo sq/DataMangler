@@ -30,10 +30,35 @@ using System.IO.MemoryMappedFiles;
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     internal unsafe struct IndexEntry {
+        public static readonly uint Size;
+
+        static IndexEntry () {
+            Size = (uint)Marshal.SizeOf(typeof(IndexEntry));
+        }
+
         public long KeyOffset, DataOffset;
         public uint KeyLength, DataLength;
-        // This has to be a 32-bit type to use CAS :(
-        public int IsValid;
+
+        public byte KeyType;
+        private byte _IsValid;
+
+        public bool IsValid {
+            get {
+                return (_IsValid == 1);
+            }
+        }
+
+        public void Invalidate () {
+            if (_IsValid != 1)
+                throw new InvalidDataException("Index corrupted");
+            _IsValid = 0;
+        }
+
+        public void Validate () {
+            if (_IsValid != 0)
+                throw new InvalidDataException("Index corrupted");
+            _IsValid = 1;
+        }
     }
 }
 
@@ -48,41 +73,92 @@ namespace Squared.Data.Mangler {
     public delegate void TangleDeserializer<T> (Stream input, out T output);
 
     public struct TangleKey {
-        private readonly Type OriginalType;
+        private static readonly Dictionary<byte, Type> TypeIdToType = new Dictionary<byte, Type>();
+        private static readonly Dictionary<Type, byte> TypeToTypeId = new Dictionary<Type, byte>();
+
+        static TangleKey () {
+            RegisterType<string>();
+            RegisterType<byte[]>();
+            RegisterType<uint>();
+            RegisterType<int>();
+            RegisterType<ulong>();
+            RegisterType<long>();
+        }
+
+        private static void RegisterType<T> () {
+            if (TypeToTypeId.Count > 255)
+                throw new InvalidOperationException("Too many registered types");
+
+            var type = typeof(T);
+            byte id = (byte)TypeToTypeId.Count;
+            TypeToTypeId[type] = id;
+            TypeIdToType[id] = type;
+        }
+
+        public readonly byte OriginalTypeId;
         public readonly ArraySegment<byte> KeyData;
 
         public TangleKey (uint key)
-            : this(BitConverter.GetBytes(key)) {
-            OriginalType = typeof(uint);
+            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(uint)]) {
         }
 
         public TangleKey (ulong key)
-            : this(BitConverter.GetBytes(key)) {
-            OriginalType = typeof(ulong);
+            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(ulong)]) {
         }
 
         public TangleKey (int key)
-            : this(BitConverter.GetBytes(key)) {
-            OriginalType = typeof(int);
+            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(int)]) {
         }
 
         public TangleKey (long key)
-            : this(BitConverter.GetBytes(key)) {
-            OriginalType = typeof(long);
+            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(long)]) {
         }
 
         public TangleKey (string key)
-            : this (Encoding.ASCII.GetBytes(key)) {
-            OriginalType = typeof(string);
+            : this (Encoding.ASCII.GetBytes(key), TypeToTypeId[typeof(string)]) {
         }
 
         public TangleKey (byte[] array)
-            : this(array, 0, array.Length) {
+            : this(array, 0, array.Length, TypeToTypeId[typeof(byte[])]) {
         }
 
-        public TangleKey (byte[] array, int offset, int count) {
+        public TangleKey (byte[] array, int offset, int count)
+            : this(array, offset, count, TypeToTypeId[typeof(string)]) {
+        }
+
+        public TangleKey (byte[] array, byte originalType)
+            : this(array, 0, array.Length, originalType) {
+        }
+
+        public TangleKey (byte[] array, int offset, int count, byte originalType) {
             KeyData = new ArraySegment<byte>(array, offset, count);
-            OriginalType = typeof(byte[]);
+            OriginalTypeId = originalType;
+        }
+
+        public Type OriginalType {
+            get {
+                return TypeIdToType[OriginalTypeId];
+            }
+        }
+
+        public object Value {
+            get {
+                var type = OriginalType;
+
+                if (type == typeof(string)) {
+                    return Encoding.ASCII.GetString(KeyData.Array, KeyData.Offset, KeyData.Count);
+                } else if (type == typeof(int)) {
+                    return BitConverter.ToInt32(KeyData.Array, KeyData.Offset);
+                } else if (type == typeof(uint)) {
+                    return BitConverter.ToUInt32(KeyData.Array, KeyData.Offset);
+                } else if (type == typeof(long)) {
+                    return BitConverter.ToInt64(KeyData.Array, KeyData.Offset);
+                } else if (type == typeof(ulong)) {
+                    return BitConverter.ToUInt64(KeyData.Array, KeyData.Offset);
+                } else /* if (type == typeof(byte[])) */ {
+                    return KeyData;
+                }
+            }
         }
 
         public static implicit operator TangleKey (string key) {
@@ -90,21 +166,15 @@ namespace Squared.Data.Mangler {
         }
 
         public override string ToString () {
-            if (OriginalType == typeof(string)) {
-                return Encoding.ASCII.GetString(KeyData.Array, KeyData.Offset, KeyData.Count);
-            } else if (OriginalType == typeof(int)) {
-                return BitConverter.ToInt32(KeyData.Array, KeyData.Offset).ToString();
-            } else if (OriginalType == typeof(uint)) {
-                return BitConverter.ToUInt32(KeyData.Array, KeyData.Offset).ToString();
-            } else if (OriginalType == typeof(long)) {
-                return BitConverter.ToInt64(KeyData.Array, KeyData.Offset).ToString();
-            } else if (OriginalType == typeof(ulong)) {
-                return BitConverter.ToUInt64(KeyData.Array, KeyData.Offset).ToString();
-            } else {
+            var value = Value;
+
+            if (value is ArraySegment<byte>) {
                 var sb = new StringBuilder();
                 for (int i = 0; i < KeyData.Count; i++)
                     sb.AppendFormat("{0:X2}", KeyData.Array[i + KeyData.Offset]);
                 return sb.ToString();
+            } else {
+                return value.ToString();
             }
         }
     }
@@ -137,6 +207,8 @@ namespace Squared.Data.Mangler {
 @"This is a DataMangler database. 
 All the actual data is stored in NTFS streams attached to this file.
 For more information, see http://support.microsoft.com/kb/105763.";
+
+        public const bool TraceKeyInsertions = false;
 
         public const uint CurrentFormatVersion = 1;
 
@@ -173,26 +245,32 @@ For more information, see http://support.microsoft.com/kb/105763.";
         }
 
         private static void VersionCheck (StreamRef stream) {
-            if (stream.FormatVersion < CurrentFormatVersion) {
-                Console.WriteLine("Format upgrade not implemented");
+            var streamVersion = stream.FormatVersion;
+            if (streamVersion == 0) {
                 stream.FormatVersion = CurrentFormatVersion;
+            } else if (streamVersion != CurrentFormatVersion) {
+                throw new NotImplementedException("Format upgrade not implemented");
             }
         }
 
-        private static long StreamAppend<U> (StreamRef stream, ref U value) 
+        private static long StreamAppend<U> (StreamRef stream, ref U value, bool acquireLocks) 
             where U : struct {
             uint entrySize = (uint)Marshal.SizeOf(typeof(U));
             long spot = stream.AllocateSpace(entrySize);
-            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
+
+            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write, acquireLocks))
                 range.View.Write<U>(0, ref value);
+
             return spot;
         }
 
-        private static long StreamAppend (StreamRef stream, ArraySegment<byte> data) {
+        private static long StreamAppend (StreamRef stream, ArraySegment<byte> data, bool acquireLocks) {
             uint entrySize = (uint)data.Count;
             long spot = stream.AllocateSpace(entrySize);
-            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
+
+            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write, acquireLocks))
                 range.View.WriteArray(0, data.Array, data.Offset, data.Count);
+
             return spot;
         }
 
@@ -208,18 +286,6 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 else
                     throw new KeyNotFoundException(key.ToString());
             });
-        }
-
-        /// <summary>
-        /// Reads a range of values from the tangle, using a pair of keys to specify the range.
-        /// </summary>
-        /// <param name="first">The key of the first value to retrieve.</param>
-        /// <param name="last">The key of the last value to retrieve.</param>
-        /// <returns>All the values from the tangle, ordered sequentially by key.</returns>
-        public Future<T[]> Get (TangleKey first, TangleKey last) {
-            var f = new Future<T[]>();
-            f.SetResult(null, new NotImplementedException());
-            return f;
         }
 
         /// <summary>
@@ -249,64 +315,96 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 return 0;
         }
 
-        private bool IndexEntryByKey (ref TangleKey key, out IndexEntry result) {
-            uint entrySize = (uint)Marshal.SizeOf(typeof(IndexEntry));
-            uint lhsLength = (uint)key.KeyData.Count;
-            var length = IndexStream.Length;
+        private IndexEntry * ValidatePointer (AcquiredPointer ptr) {
+            var result = (IndexEntry *)ptr.Pointer;
+            int iterations = 0;
 
-            fixed (byte * pLhs = &key.KeyData.Array[key.KeyData.Offset])
-            for (long position = 0; (position + entrySize) <= length; position += entrySize) {
+            while (!result->IsValid) {
+                if (iterations < 6)
+                    Thread.SpinWait(2 + (iterations * 5));
+                else
+                    Thread.Sleep(0);
+            }
 
-                using (var indexRange = IndexStream.AccessRange(position, entrySize, MemoryMappedFileAccess.Read))
+            return result;
+        }
+
+        private StreamRange AccessIndex (long index) {
+            long count = (IndexStream.Length / IndexEntry.Size);
+
+            if ((index < 0) || (index >= count))
+                throw new ArgumentException(String.Format(
+                    "Expected 0 <= index < {0}, but index was {1}", count, index
+                ), "index");
+
+            long position = index * IndexEntry.Size;
+            return IndexStream.AccessRange(position, IndexEntry.Size, MemoryMappedFileAccess.Read);
+        }
+
+        private unsafe bool IndexEntryByKey (long firstIndex, long indexCount, ref TangleKey rhs, out IndexEntry resultEntry, out long resultIndex) {
+            uint lengthRhs = (uint)rhs.KeyData.Count;
+            long min = firstIndex, max = firstIndex + indexCount - 1;
+            long pivot;
+            int delta = 0;
+
+            fixed (byte * pRhs = &rhs.KeyData.Array[rhs.KeyData.Offset])
+            while (min <= max) {
+
+                pivot = min + ((max - min) >> 1);
+
+                using (var indexRange = AccessIndex(pivot))
                 using (var rawPtr = indexRange.GetPointer()) {
-                    var pEntry = (IndexEntry *)rawPtr.Pointer;
-
-                    if (pEntry->IsValid != 1)
-                        continue;
+                    var pEntry = ValidatePointer(rawPtr);
 
                     using (var keyRange = KeyStream.AccessRange(
                         pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
                     ))
-                    using (var rhs = keyRange.GetPointer()) {
+                    using (var lhs = keyRange.GetPointer())
+                        delta = CompareKeys(lhs.Pointer, pEntry->KeyLength, pRhs, lengthRhs);
 
-                        if (CompareKeys(
-                                pLhs, lhsLength, rhs.Pointer, pEntry->KeyLength
-                            ) == 0
-                        ) {
-                            result = *pEntry;
-                            return true;
-                        }
+                    if (delta == 0) {
+                        resultEntry = *pEntry;
+                        resultIndex = pivot;
+
+                        return true;
+                    } else if (delta < 0) {
+                        min = pivot + 1;
+                    } else {
+                        max = pivot - 1;
                     }
-
                 }
-
             }
 
-            result = default(IndexEntry);
+            resultEntry = default(IndexEntry);
+            resultIndex = min;
+
             return false;
         }
 
-        private void WriteNewPair (TangleKey key, ref T value, out IndexEntry indexEntry) {
+        private long IndexCount {
+            get {
+                return (IndexStream.Length / IndexEntry.Size);
+            }
+        }
+
+        private bool IndexEntryByKey (ref TangleKey key, out IndexEntry resultEntry, out long resultIndex) {
+            return IndexEntryByKey(0, IndexCount, ref key, out resultEntry, out resultIndex);
+        }
+
+        private void WriteNewPair (ref TangleKey key, MemoryStream bytes, out IndexEntry indexEntry, bool acquireLocks) {
             long dataPos;
             uint dataLen;
-            using (var ms = new MemoryStream()) {
-                Serializer(ref value, ms);
-                dataLen = (uint)ms.Length;
-                dataPos = StreamAppend(
-                    DataStream, new ArraySegment<byte>(
-                        ms.GetBuffer(), 0, (int)ms.Length
-                    )
-                );
-            }
+            dataLen = (uint)bytes.Length;
+            dataPos = StreamAppend(DataStream, bytes.GetSegment(), acquireLocks);
 
-            var keyPos = StreamAppend(KeyStream, key.KeyData);
+            var keyPos = StreamAppend(KeyStream, key.KeyData, acquireLocks);
 
             indexEntry = new IndexEntry {
                 DataOffset = dataPos,
                 KeyOffset = keyPos,
                 DataLength = dataLen,
                 KeyLength = (uint)key.KeyData.Count,
-                IsValid = 0
+                KeyType = key.OriginalTypeId
             };
         }
 
@@ -319,30 +417,142 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 Deserializer(ms, out value);
         }
 
-        private void InternalSet (TangleKey key, T value) {
-            uint entrySize = (uint)Marshal.SizeOf(typeof(IndexEntry));
+        private unsafe void ZeroBytes (StreamRange range, long offset, uint count) {
+            using (var ptr = range.GetPointer())
+            for (int i = 0; i < count; i++)
+                ptr.Pointer[i + offset] = 0;
+        }
 
+        private unsafe void MoveEntriesForward (StreamRange indexRange, AcquiredPointer rawPtr) {
+            long position = indexRange.Size - IndexEntry.Size;
+            while (position >= IndexEntry.Size) {
+                var nextPosition = position - IndexEntry.Size;
+
+                IndexEntry* pSource = (IndexEntry *)(rawPtr.Pointer + nextPosition);
+                IndexEntry* pDest = (IndexEntry*)(rawPtr.Pointer + position);
+
+                pSource->Invalidate();
+
+                *pDest = *pSource;
+
+                pDest->Validate();
+
+                position = nextPosition;
+            }
+        }
+
+        private unsafe void InternalSet (TangleKey key, T value) {
+            const int writeModeNew = 0;
+            const int writeModeReplaceData = 1;
+            const int writeModeNewData = 2;
+            const int writeModeInsertNew = 3;
+
+            bool acquireLocks = true;
+            int writeMode;
             IndexEntry indexEntry;
-            WriteNewPair(key, ref value, out indexEntry);
+            long offset, relocationEndpoint;
 
-            long offset = IndexStream.AllocateSpace(entrySize);
-            using (var indexRange = IndexStream.AccessRange(offset, entrySize, MemoryMappedFileAccess.ReadWrite))
-            using (var rawPtr = indexRange.GetPointer()) {
-                var pEntry = (IndexEntry*)rawPtr.Pointer;
-                *pEntry = indexEntry;
+            using (var ms = new MemoryStream()) {
+                Serializer(ref value, ms);
 
-                // I think it might be okay to just do a regular set here,
-                //  and not even use CAS - but it might need a memory barrier.
-                // I'll worry about the performance hit later. :)
-                var wasValid = Interlocked.CompareExchange(ref pEntry->IsValid, 1, 0);
-                if (wasValid != 0)
-                    throw new InvalidDataException("Index corrupted");
+                uint accessSize = IndexEntry.Size;
+                long index;
+                if (!IndexEntryByKey(0, IndexCount, ref key, out indexEntry, out index)) {
+                    offset = index * IndexEntry.Size;
+                    long newSpot = IndexStream.AllocateSpace(IndexEntry.Size);
+
+                    if (offset < newSpot) {
+                        var sz = newSpot - offset + IndexEntry.Size;
+                        if (sz >= uint.MaxValue)
+                            throw new InvalidDataException("Index too large");
+
+                        accessSize = (uint)sz;
+                        relocationEndpoint = newSpot;
+                        writeMode = writeModeInsertNew;
+                    } else {
+                        offset = newSpot;
+                        writeMode = writeModeNew;
+                    }
+                } else if (ms.Length > indexEntry.DataLength) {
+                    offset = index * IndexEntry.Size;
+                    writeMode = writeModeNewData;
+                } else {
+                    offset = index * IndexEntry.Size;
+                    writeMode = writeModeReplaceData;
+                }
+
+                using (var indexRange = IndexStream.AccessRange(offset, accessSize, MemoryMappedFileAccess.ReadWrite, acquireLocks))
+                using (var rawPtr = indexRange.GetPointer()) {
+                    var pEntry = (IndexEntry*)rawPtr.Pointer;
+
+                    if (writeMode == writeModeInsertNew)
+                        MoveEntriesForward(indexRange, rawPtr);
+
+                    if (writeMode == writeModeNew || writeMode == writeModeInsertNew) {
+                        WriteNewPair(ref key, ms, out *pEntry, acquireLocks);
+                    } else {
+                        pEntry->Invalidate();
+                    }
+
+                    var segment = ms.GetSegment();
+                    if (writeMode == writeModeNewData || writeMode == writeModeInsertNew) {
+                        using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write, acquireLocks))
+                            ZeroBytes(range, 0, pEntry->DataLength);
+
+                        pEntry->DataOffset = StreamAppend(DataStream, segment, acquireLocks);
+                        pEntry->DataLength = (uint)segment.Count;
+                    } else {
+                        using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write, acquireLocks)) {
+                            range.View.WriteArray(0, segment.Array, segment.Offset, segment.Count);
+
+                            var bytesToZero = (uint)(pEntry->DataLength - segment.Count);
+                            if (bytesToZero > 0)
+                                ZeroBytes(range, segment.Count, (uint)bytesToZero);
+                        }
+
+                        pEntry->DataLength = (uint)segment.Count;
+                    }
+
+                    pEntry->Validate();
+                }
+            }
+
+            if (TraceKeyInsertions) {
+                Console.WriteLine("--------");
+                foreach (var k in Keys)
+                    Console.WriteLine(k.Value);
+            }
+        }
+
+        private unsafe TangleKey GetKeyFromIndex (long index) {
+            using (var indexRange = AccessIndex(index))
+            using (var ptr = indexRange.GetPointer()) {
+                var pEntry = ValidatePointer(ptr);
+
+                using (var keyRange = KeyStream.AccessRange(
+                    pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
+                )) {
+                    var array = new byte[pEntry->KeyLength];
+                    keyRange.View.ReadArray<byte>(0, array, 0, (int)pEntry->KeyLength);
+
+                    return new TangleKey(array, pEntry->KeyType);
+                }
+            }
+        }
+
+        public IEnumerable<TangleKey> Keys {
+            get {
+                long count = IndexStream.Length / IndexEntry.Size;
+                for (long i = 0; i < count; i++)
+                    yield return GetKeyFromIndex(i);
             }
         }
 
         private bool InternalGet (TangleKey key, out T value) {
             IndexEntry indexEntry;
-            if (!IndexEntryByKey(ref key, out indexEntry)) {
+            long temp;
+
+            if (!IndexEntryByKey(ref key, out indexEntry, out temp)) {
                 value = default(T);
                 return false;
             }
