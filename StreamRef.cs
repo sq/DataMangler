@@ -56,8 +56,7 @@ namespace Squared.Data.Mangler.Internal {
     internal unsafe class StreamRange : IDisposable {
         public readonly StreamRef Stream;
 
-        private readonly byte* Pointer;
-        private readonly long PointerOffset;
+        public readonly byte* Pointer;
 
         public readonly long Offset, Size;
 
@@ -69,13 +68,9 @@ namespace Squared.Data.Mangler.Internal {
             View = view;
             Offset = offset;
             Size = size;
-            PointerOffset = view.GetPointerOffset();
             Buffer = view.GetSafeBuffer();
             Buffer.AcquirePointer(ref Pointer);
-        }
-
-        public byte* GetPointer () {
-            return Pointer + PointerOffset;
+            Pointer += view.GetPointerOffset();
         }
 
         public void Dispose () {

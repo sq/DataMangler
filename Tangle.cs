@@ -249,7 +249,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
             long spot = stream.AllocateSpace(entrySize);
 
             using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
-                Unsafe<U>.StructureToPtr(ref value, range.GetPointer(), entrySize);
+                Unsafe<U>.StructureToPtr(ref value, range.Pointer, entrySize);
 
             return spot;
         }
@@ -337,7 +337,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 return 0;
         }
 
-        private IndexEntry * ValidatePointer (byte * ptr) {
+        private IndexEntry * ValidateIndexPointer (byte * ptr) {
             var result = (IndexEntry *)ptr;
 
             if (result->IsValid != 1)
@@ -384,12 +384,12 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 pivot = min + ((max - min) >> 1);
 
                 using (var indexRange = AccessIndex(pivot)) {
-                    var pEntry = ValidatePointer(indexRange.GetPointer());
+                    var pEntry = ValidateIndexPointer(indexRange.Pointer);
 
                     using (var keyRange = KeyStream.AccessRange(
                         pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
                     )) {
-                        var pLhs = keyRange.GetPointer();
+                        var pLhs = keyRange.Pointer;
                         delta = CompareKeys(pLhs, pEntry->KeyLength, pRhs, lengthRhs);
                     }
 
@@ -424,24 +424,24 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
         private void ReadValue (ref IndexEntry entry, out T value) {
             using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength))
-            using (var ms = new UnmanagedMemoryStream(range.GetPointer(), entry.DataLength, entry.DataLength, FileAccess.Read))
+            using (var ms = new UnmanagedMemoryStream(range.Pointer, entry.DataLength, entry.DataLength, FileAccess.Read))
                 Deserializer(ms, out value);
         }
 
         private static void ReadBytes (StreamRange range, long offset, byte[] buffer, long bufferOffset, uint count) {
-            var ptr = range.GetPointer();
+            var ptr = range.Pointer;
             for (uint i = 0; i < count; i++)
                 buffer[i + bufferOffset] = ptr[i + offset];
         }
 
         private static void WriteBytes (StreamRange range, long offset, ArraySegment<byte> bytes) {
-            var ptr = range.GetPointer();
+            var ptr = range.Pointer;
             for (uint i = 0; i < bytes.Count; i++)
                 ptr[i + offset] = bytes.Array[i + bytes.Offset];
         }
 
         private static void ZeroBytes (StreamRange range, long offset, uint count) {
-            var ptr = range.GetPointer();
+            var ptr = range.Pointer;
             for (uint i = 0; i < count; i++)
                 ptr[i + offset] = 0;
         }
@@ -454,10 +454,10 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 positionToClear, (uint)size,
                 MemoryMappedFileAccess.ReadWrite
             )) {
-                var ptr = range.GetPointer();
+                var ptr = range.Pointer;
 
                 while (position >= 0) {
-                    IndexEntry* pSource = (IndexEntry*)(ptr + position);
+                    IndexEntry* pSource = ValidateIndexPointer(ptr + position);
                     IndexEntry* pDest = (IndexEntry*)(ptr + position + IndexEntry.Size);
 
                     pSource->IsValid = 0;
@@ -515,7 +515,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
                     MoveEntriesForward(positionToClear, emptyPosition);
 
                 using (var indexRange = IndexStream.AccessRange(offset, IndexEntry.Size, MemoryMappedFileAccess.ReadWrite)) {
-                    var pEntry = (IndexEntry *)indexRange.GetPointer();
+                    var pEntry = (IndexEntry *)indexRange.Pointer;
 
                     if (writeMode == writeModeNew || writeMode == writeModeInsertNew) {
                         *pEntry = new IndexEntry {
@@ -569,7 +569,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
         private unsafe TangleKey GetKeyFromIndex (long index) {
             using (var indexRange = AccessIndex(index)) {
-                var pEntry = ValidatePointer(indexRange.GetPointer());
+                var pEntry = ValidateIndexPointer(indexRange.Pointer);
 
                 using (var keyRange = KeyStream.AccessRange(
                     pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
