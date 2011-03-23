@@ -104,18 +104,12 @@ namespace Squared.Data.Mangler.Tests {
             );
         }
 
-        protected IEnumerator<object> WriteLotsOfValues (Tangle<int> tangle, int numIterations, int batchSize) {
-            var futures = new List<IFuture>();
+        protected IEnumerator<object> WriteLotsOfValues (Tangle<int> tangle, int numIterations) {
+            TangleKey key;
 
             for (int i = 0; i < numIterations; i++) {
-                var key = new TangleKey(i);
-                var f = tangle.Set(key, i);
-                futures.Add(f);
-
-                if (futures.Count >= batchSize) {
-                    yield return Future.WaitForAll(futures);
-                    futures.Clear();
-                }
+                key = new TangleKey(i);
+                yield return tangle.Set(key, i);
             }
         }
 
@@ -124,7 +118,7 @@ namespace Squared.Data.Mangler.Tests {
             const int numValues = 10000;
 
             long startTime = Time.Ticks;
-            Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues, 1));
+            Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues));
             decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
             Console.WriteLine(
                 "Wrote {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",

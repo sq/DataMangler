@@ -26,6 +26,8 @@ using System.Threading;
 using Squared.Data.Mangler.Internal;
 using System.Xml.Serialization;
 using System.IO.MemoryMappedFiles;
+using Squared.Util;
+using System.Collections.Concurrent;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -39,26 +41,7 @@ namespace Squared.Data.Mangler.Internal {
         public long KeyOffset, DataOffset;
         public uint KeyLength, DataLength;
 
-        public byte KeyType;
-        private byte _IsValid;
-
-        public bool IsValid {
-            get {
-                return (_IsValid == 1);
-            }
-        }
-
-        public void Invalidate () {
-            if (_IsValid != 1)
-                throw new InvalidDataException("Index corrupted");
-            _IsValid = 0;
-        }
-
-        public void Validate () {
-            if (_IsValid != 0)
-                throw new InvalidDataException("Index corrupted");
-            _IsValid = 1;
-        }
+        public byte KeyType, IsValid;
     }
 }
 
@@ -219,6 +202,13 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
         protected readonly ReaderWriterLockSlim IndexLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
 
+        protected struct WorkItem {
+            public IFuture Future;
+            public Action Action;
+        }
+
+        protected Squared.Task.Internal.WorkerThread<ConcurrentQueue<WorkItem>> _WorkerThread;
+
         private readonly StreamRef IndexStream;
         private readonly StreamRef KeyStream;
         private readonly StreamRef DataStream;
@@ -253,22 +243,22 @@ For more information, see http://support.microsoft.com/kb/105763.";
             }
         }
 
-        private static long StreamAppend<U> (StreamRef stream, ref U value, bool acquireLocks) 
+        private static long StreamAppend<U> (StreamRef stream, ref U value) 
             where U : struct {
             uint entrySize = (uint)Marshal.SizeOf(typeof(U));
             long spot = stream.AllocateSpace(entrySize);
 
-            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write, acquireLocks))
+            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
                 range.View.Write<U>(0, ref value);
 
             return spot;
         }
 
-        private static long StreamAppend (StreamRef stream, ArraySegment<byte> data, bool acquireLocks) {
+        private static long StreamAppend (StreamRef stream, ArraySegment<byte> data) {
             uint entrySize = (uint)data.Count;
             long spot = stream.AllocateSpace(entrySize);
 
-            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write, acquireLocks))
+            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
                 range.View.WriteArray(0, data.Array, data.Offset, data.Count);
 
             return spot;
@@ -279,13 +269,15 @@ For more information, see http://support.microsoft.com/kb/105763.";
         /// </summary>
         /// <returns>A future that will contain the value once it has been read.</returns>
         public Future<T> Get (TangleKey key) {
-            return Future.RunInThread(() => {
+            var f = new Future<T>();
+            QueueWorkItem(f, () => {
                 T result;
                 if (InternalGet(key, out result))
-                    return result;
+                    f.SetResult(result, null);
                 else
-                    throw new KeyNotFoundException(key.ToString());
+                    f.SetResult(result, new KeyNotFoundException(key.ToString()));
             });
+            return f;
         }
 
         /// <summary>
@@ -293,9 +285,40 @@ For more information, see http://support.microsoft.com/kb/105763.";
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public IFuture Set (TangleKey key, T value) {
-            return Future.RunInThread(
-                () => InternalSet(key, value)
-            );
+            var f = new SignalFuture();
+            QueueWorkItem(f, () => {
+                InternalSet(key, value);
+                f.Complete();
+            });
+            return f;
+        }
+
+        private void QueueWorkItem (IFuture future, Action action) {
+            if (_WorkerThread == null)
+                _WorkerThread = new Squared.Task.Internal.WorkerThread<ConcurrentQueue<WorkItem>>(WorkerThreadFunc, ThreadPriority.Normal);
+
+            _WorkerThread.WorkItems.Enqueue(new WorkItem {
+                Future = future,
+                Action = action
+            });
+
+            _WorkerThread.Wake();
+        }
+
+        protected void WorkerThreadFunc (ConcurrentQueue<WorkItem> workItems, ManualResetEvent newWorkItemEvent) {
+            while (true) {
+                WorkItem item;
+                while (workItems.TryDequeue(out item)) {
+                    try {
+                        item.Action();
+                    } catch (Exception ex) {
+                        item.Future.Fail(ex);
+                    }
+                }
+
+                newWorkItemEvent.WaitOne();
+                newWorkItemEvent.Reset();
+            }
         }
 
         private unsafe int CompareKeys (byte * lhs, uint lengthLhs, byte * rhs, uint lengthRhs) {
@@ -319,11 +342,15 @@ For more information, see http://support.microsoft.com/kb/105763.";
             var result = (IndexEntry *)ptr.Pointer;
             int iterations = 0;
 
-            while (!result->IsValid) {
+            // Thread.MemoryBarrier();
+
+            while (result->IsValid != 1) {
                 if (iterations < 6)
                     Thread.SpinWait(2 + (iterations * 5));
                 else
                     Thread.Sleep(0);
+
+                Thread.MemoryBarrier();
             }
 
             return result;
@@ -391,13 +418,13 @@ For more information, see http://support.microsoft.com/kb/105763.";
             return IndexEntryByKey(0, IndexCount, ref key, out resultEntry, out resultIndex);
         }
 
-        private void WriteNewPair (ref TangleKey key, MemoryStream bytes, out IndexEntry indexEntry, bool acquireLocks) {
+        private void WriteNewPair (ref TangleKey key, MemoryStream bytes, out IndexEntry indexEntry) {
             long dataPos;
             uint dataLen;
             dataLen = (uint)bytes.Length;
-            dataPos = StreamAppend(DataStream, bytes.GetSegment(), acquireLocks);
+            dataPos = StreamAppend(DataStream, bytes.GetSegment());
 
-            var keyPos = StreamAppend(KeyStream, key.KeyData, acquireLocks);
+            var keyPos = StreamAppend(KeyStream, key.KeyData);
 
             indexEntry = new IndexEntry {
                 DataOffset = dataPos,
@@ -431,11 +458,13 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 IndexEntry* pSource = (IndexEntry *)(rawPtr.Pointer + nextPosition);
                 IndexEntry* pDest = (IndexEntry*)(rawPtr.Pointer + position);
 
-                pSource->Invalidate();
+                pSource->IsValid = 0;
+                // Thread.MemoryBarrier();
 
                 *pDest = *pSource;
 
-                pDest->Validate();
+                pDest->IsValid = 1;
+                // Thread.MemoryBarrier();
 
                 position = nextPosition;
             }
@@ -447,7 +476,6 @@ For more information, see http://support.microsoft.com/kb/105763.";
             const int writeModeNewData = 2;
             const int writeModeInsertNew = 3;
 
-            bool acquireLocks = true;
             int writeMode;
             IndexEntry indexEntry;
             long offset, relocationEndpoint;
@@ -481,7 +509,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
                     writeMode = writeModeReplaceData;
                 }
 
-                using (var indexRange = IndexStream.AccessRange(offset, accessSize, MemoryMappedFileAccess.ReadWrite, acquireLocks))
+                using (var indexRange = IndexStream.AccessRange(offset, accessSize, MemoryMappedFileAccess.ReadWrite))
                 using (var rawPtr = indexRange.GetPointer()) {
                     var pEntry = (IndexEntry*)rawPtr.Pointer;
 
@@ -489,20 +517,22 @@ For more information, see http://support.microsoft.com/kb/105763.";
                         MoveEntriesForward(indexRange, rawPtr);
 
                     if (writeMode == writeModeNew || writeMode == writeModeInsertNew) {
-                        WriteNewPair(ref key, ms, out *pEntry, acquireLocks);
+                        WriteNewPair(ref key, ms, out *pEntry);
                     } else {
-                        pEntry->Invalidate();
+                        // Thread.MemoryBarrier();
+                        pEntry->IsValid = 0;
+                        // Thread.MemoryBarrier();
                     }
 
                     var segment = ms.GetSegment();
                     if (writeMode == writeModeNewData || writeMode == writeModeInsertNew) {
-                        using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write, acquireLocks))
+                        using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write))
                             ZeroBytes(range, 0, pEntry->DataLength);
 
-                        pEntry->DataOffset = StreamAppend(DataStream, segment, acquireLocks);
+                        pEntry->DataOffset = StreamAppend(DataStream, segment);
                         pEntry->DataLength = (uint)segment.Count;
                     } else {
-                        using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write, acquireLocks)) {
+                        using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write)) {
                             range.View.WriteArray(0, segment.Array, segment.Offset, segment.Count);
 
                             var bytesToZero = (uint)(pEntry->DataLength - segment.Count);
@@ -513,7 +543,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
                         pEntry->DataLength = (uint)segment.Count;
                     }
 
-                    pEntry->Validate();
+                    // Thread.MemoryBarrier();
+                    pEntry->IsValid = 1;
+                    // Thread.MemoryBarrier();
                 }
             }
 

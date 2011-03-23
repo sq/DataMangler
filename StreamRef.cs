@@ -39,11 +39,9 @@ namespace Squared.Data.Mangler.Internal {
 
         private readonly MemoryMappedViewAccessor Accessor;
         private readonly SafeBuffer Buffer;
-        private readonly Action Cleanup;
 
-        public StreamHeaderRef (MemoryMappedViewAccessor accessor, Action cleanup) {
+        public StreamHeaderRef (MemoryMappedViewAccessor accessor) {
             Accessor = accessor;
-            Cleanup = cleanup;
             Buffer = accessor.GetSafeBuffer();
 
             byte* temp = null;
@@ -54,7 +52,6 @@ namespace Squared.Data.Mangler.Internal {
 
         public void Dispose () {
             Buffer.ReleasePointer();
-            Cleanup();
         }
     }
 
@@ -63,13 +60,10 @@ namespace Squared.Data.Mangler.Internal {
         public readonly MemoryMappedViewAccessor View;
         public readonly uint Size;
 
-        private readonly bool HoldingLock;
-
-        public StreamRange (StreamRef stream, MemoryMappedViewAccessor view, uint size, bool holdingLock) {
+        public StreamRange (StreamRef stream, MemoryMappedViewAccessor view, uint size) {
             Stream = stream;
             View = view;
             Size = size;
-            HoldingLock = holdingLock;
         }
 
         public AcquiredPointer GetPointer () {
@@ -78,7 +72,6 @@ namespace Squared.Data.Mangler.Internal {
 
         public void Dispose () {
             View.Dispose();
-            Stream.OnRangeReleased(HoldingLock);
         }
     }
 
@@ -137,25 +130,13 @@ namespace Squared.Data.Mangler.Internal {
         protected MemoryMappedViewAccessor HeaderView;
         protected FileStream Stream;
 
-        // Used for globally locking the state of the stream.
-        //  A write lock is acquired any time we intend to manipulate the Handle or HeaderView fields.
-        //  A read lock is acquired any time we are using the contents of the mapped file.
-        public readonly ReaderWriterLockSlim Lock;
-
-        protected int OutstandingHeaderLocks, OutstandingRangeLocks;
         protected long StreamCapacity;
 
         public StreamRef (string filename, string streamName) {
-            Lock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
             Filename = filename;
             StreamName = streamName;
 
-            Lock.EnterWriteLock();
-            try {
-                CreateHandles(InitialCapacity);
-            } finally {
-                Lock.ExitWriteLock();
-            }
+            CreateHandles(InitialCapacity);
         }
 
         protected FileStream OpenAlternateStream (string filename, string streamName) {
@@ -172,11 +153,7 @@ namespace Squared.Data.Mangler.Internal {
             return new FileStream(handle, FileAccess.ReadWrite);
         }
 
-        // A write lock must be held.
         protected void CreateHandles (long capacity) {
-            if (!Lock.IsWriteLockHeld)
-                throw new SynchronizationLockException("Cannot create handles without holding the write lock.");
-
             Stream = OpenAlternateStream(Filename, StreamName);
             if (Stream.Length > capacity)
                 capacity = Stream.Length;
@@ -190,59 +167,28 @@ namespace Squared.Data.Mangler.Internal {
             StreamCapacity = capacity;
         }
 
-        internal void OnRangeReleased (bool holdingLock) {
-            if (holdingLock) {
-                Interlocked.Decrement(ref OutstandingRangeLocks);
-                Lock.ExitReadLock();
-            }
-        }
-
-        protected void OnHeaderReleased () {
-            Interlocked.Decrement(ref OutstandingHeaderLocks);
-            Lock.ExitReadLock();
-        }
-
         internal unsafe StreamHeaderRef AccessHeader () {
             StreamHeaderRef result;
 
-            Lock.EnterReadLock();
-            try {
-                result = new StreamHeaderRef(HeaderView, OnHeaderReleased);
-            } catch {
-                Lock.ExitReadLock();
-                throw;
-            }
+            result = new StreamHeaderRef(HeaderView);
 
-            Interlocked.Increment(ref OutstandingHeaderLocks);
             return result;
         }
 
         protected void EnsureCapacity (long capacity) {
-            // Since capacity only ever increases, we can early-out here
-            //  without acquiring the lock and serializing multithreaded
-            //  calls to this function.
             if (capacity <= StreamCapacity)
                 return;
 
-            Lock.EnterWriteLock();
-            try {
-                // We grow the stream by a fixed amount every time we run out
-                //  of space. Doubling or some other algorithm might be better,
-                //  but this is simple and predictable.
-                var newCapacity = (capacity + GrowthRate - 1) / GrowthRate * GrowthRate;
+            // We grow the stream by a fixed amount every time we run out
+            //  of space. Doubling or some other algorithm might be better,
+            //  but this is simple and predictable.
+            var newCapacity = (capacity + GrowthRate - 1) / GrowthRate * GrowthRate;
 
-                // This should never happen.
-                if (OutstandingHeaderLocks > 0)
-                    throw new InvalidDataException("Header is locked, so the stream cannot be expanded.");
+            HeaderView.Flush();
+            HeaderView.Dispose();
+            Handle.Dispose();
 
-                HeaderView.Flush();
-                HeaderView.Dispose();
-                Handle.Dispose();
-
-                CreateHandles(newCapacity);
-            } finally {
-                Lock.ExitWriteLock();
-            }
+            CreateHandles(newCapacity);
         }
 
         /// <summary>
@@ -299,44 +245,26 @@ namespace Squared.Data.Mangler.Internal {
         /// </summary>
         /// <param name="offset">The offset within the stream, relative to the end of the stream header.</param>
         /// <param name="size">The size of the range to access, in bytes.</param>
-        public StreamRange AccessRange (long offset, uint size, MemoryMappedFileAccess access = MemoryMappedFileAccess.ReadWrite, bool acquireLock = true) {
+        public StreamRange AccessRange (long offset, uint size, MemoryMappedFileAccess access = MemoryMappedFileAccess.ReadWrite) {
             // Before acquiring a read lock, check to see whether we need to grow the
             //  database first. This check acquires locks of its own.
             EnsureCapacity(HeaderSize + offset + size);
 
             StreamRange result;
 
-            if (acquireLock)
-                Lock.EnterReadLock();
-
-            try {
-                result = new StreamRange(
-                    this, Handle.CreateViewAccessor(
-                        offset + HeaderSize, size, access
-                    ), size, acquireLock
-                );
-            } catch {
-                if (acquireLock)
-                    Lock.ExitReadLock();
-                throw;
-            }
-
-            if (acquireLock)
-                Interlocked.Increment(ref OutstandingRangeLocks);
+            result = new StreamRange(
+                this, Handle.CreateViewAccessor(
+                    offset + HeaderSize, size, access
+                ), size
+            );
 
             return result;
         }
 
         public void Dispose () {
-            Lock.EnterWriteLock();
-            try {
-                HeaderView.Flush();
-                HeaderView.Dispose();
-                Handle.Dispose();
-            } finally {
-                Lock.ExitWriteLock();
-                Lock.Dispose();
-            }
+            HeaderView.Flush();
+            HeaderView.Dispose();
+            Handle.Dispose();
         }
     }
 
