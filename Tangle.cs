@@ -1,9 +1,26 @@
-﻿using System;
+﻿/*
+The contents of this file are subject to the Mozilla Public License
+Version 1.1 (the "License"); you may not use this file except in
+compliance with the License. You may obtain a copy of the License at
+http://www.mozilla.org/MPL/
+
+Software distributed under the License is distributed on an "AS IS"
+basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
+License for the specific language governing rights and limitations
+under the License.
+
+The Original Code is DataMangler Key-Value Store.
+
+The Initial Developer of the Original Code is Mozilla Corporation.
+
+Original Author: Kevin Gadd (kevin.gadd@gmail.com)
+*/
+
+using System;
 using System.Collections.Generic;
 using System.Text;
 using Squared.Task;
 using System.IO;
-using System.Runtime.Serialization.Formatters.Binary;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Squared.Data.Mangler.Internal;
@@ -14,6 +31,7 @@ namespace Squared.Data.Mangler.Internal {
     internal unsafe struct IndexEntry {
         public long KeyOffset, DataOffset;
         public uint KeyLength, DataLength;
+        public byte Valid;
     }
 }
 
@@ -193,6 +211,9 @@ namespace Squared.Data.Mangler {
                 using (var rawPtr = indexRange.GetPointer()) {
                     var pEntry = (IndexEntry *)rawPtr.Pointer;
 
+                    if (pEntry->Valid != 1)
+                        continue;
+
                     using (var keyRange = KeyStream.AccessRange(
                         pEntry->KeyOffset, pEntry->KeyLength
                     ))
@@ -234,7 +255,8 @@ namespace Squared.Data.Mangler {
                 DataOffset = dataPos,
                 KeyOffset = keyPos,
                 DataLength = dataLen,
-                KeyLength = (uint)key.KeyData.Count
+                KeyLength = (uint)key.KeyData.Count,
+                Valid = 1
             };
         }
 
