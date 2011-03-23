@@ -211,30 +211,30 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         protected void EnsureCapacity (long capacity) {
-            Lock.EnterUpgradeableReadLock();
+            // Since capacity only ever increases, we can early-out here
+            //  without acquiring the lock and serializing multithreaded
+            //  calls to this function.
+            if (capacity <= StreamCapacity)
+                return;
+
+            Lock.EnterWriteLock();
             try {
-                if (capacity <= StreamCapacity)
-                    return;
+                // We grow the stream by a fixed amount every time we run out
+                //  of space. Doubling or some other algorithm might be better,
+                //  but this is simple and predictable.
+                var newCapacity = (capacity + GrowthRate - 1) / GrowthRate * GrowthRate;
 
-                Lock.EnterWriteLock();
+                // This should never happen.
+                if (OutstandingHeaderLocks > 0)
+                    throw new InvalidDataException("Header is locked, so the stream cannot be expanded.");
 
-                try {
-                    var newCapacity = (capacity + GrowthRate - 1) / GrowthRate * GrowthRate;
+                HeaderView.Flush();
+                HeaderView.Dispose();
+                Handle.Dispose();
 
-                    // This should never happen.
-                    if (OutstandingHeaderLocks > 0)
-                        throw new InvalidDataException("Header is locked, so the stream cannot be expanded.");
-
-                    HeaderView.Flush();
-                    HeaderView.Dispose();
-                    Handle.Dispose();
-
-                    CreateHandles(newCapacity);
-                } finally {
-                    Lock.ExitWriteLock();
-                }
+                CreateHandles(newCapacity);
             } finally {
-                Lock.ExitUpgradeableReadLock();
+                Lock.ExitWriteLock();
             }
         }
 
@@ -246,6 +246,14 @@ namespace Squared.Data.Mangler.Internal {
         public unsafe long AllocateSpace (uint size) {
             long oldSize, newSize;
 
+            // This is thread-safe, but because we bump the DataLength without
+            //  making any effort to ensure the data in the region is valid,
+            //  other threads may attempt to read it and find random garbage
+            //  there.
+            // On the bright side, MSDN claims that unused regions in a mapped
+            //  file are always zeroes, and this seems to be true so far. Given
+            //  this, most of the time you just need a 'this data is valid' bit
+            //  tucked away to protect yourself from reading uninitialized data.
             using (var header = AccessHeader()) {
                 newSize = Interlocked.Add(ref header.Ptr->DataLength, size);
                 oldSize = newSize - size;
@@ -285,14 +293,9 @@ namespace Squared.Data.Mangler.Internal {
         /// <param name="offset">The offset within the stream, relative to the end of the stream header.</param>
         /// <param name="size">The size of the range to access, in bytes.</param>
         public StreamRange AccessRange (long offset, uint size, MemoryMappedFileAccess access = MemoryMappedFileAccess.ReadWrite) {
-            switch (access) {
-                case MemoryMappedFileAccess.Write:
-                case MemoryMappedFileAccess.ReadWrite:
-                case MemoryMappedFileAccess.ReadWriteExecute:
-                case MemoryMappedFileAccess.CopyOnWrite:
-                    EnsureCapacity(HeaderSize + offset + size);
-                    break;
-            }
+            // Before acquiring a read lock, check to see whether we need to grow the
+            //  database first. This check acquires locks of its own.
+            EnsureCapacity(HeaderSize + offset + size);
 
             StreamRange result;
 
@@ -352,6 +355,12 @@ namespace Squared.Data.Mangler.Internal {
             _GetPointerOffset = CreateGetPointerOffset();
         }
 
+        // To manipulate structures directly in mapped memory, we have
+        //  to be able to get a pointer to the mapping. While this is possible,
+        //  the classes for using mapped files do not expose a way to do this
+        //  directly. So, we pull out the SafeBuffer object associated with the
+        //  mapping and then use a public method to get a pointer.
+        // Kind of nasty, but what else can you do?
         private static GetSafeBufferFunc CreateGetSafeBuffer () {
             var t = typeof(UnmanagedMemoryAccessor);
             var field = t.GetField(
@@ -370,6 +379,15 @@ namespace Squared.Data.Mangler.Internal {
             ).Compile();
         }
 
+        // When we get a pointer from a SafeBuffer associated with a mapped
+        //  view, the pointer is going to be wrong unless the offset into
+        //  the file that we mapped was aligned with a page boundary.
+        // So, once we get the pointer, we have to find out the alignment
+        //  necessary to line it up with a page, and add that to the pointer
+        //  so that we are looking at the start of the mapping, instead of
+        //  the start of the page containing the mapping.
+        // This is a bit messier than the SafeBuffer hack, because one of the
+        //  relevant types - MemoryMappedView - is internal.
         private static GetPointerOffsetFunc CreateGetPointerOffset () {
             var tAccessor = typeof(MemoryMappedViewAccessor);
             var tView = tAccessor.Assembly.GetType(

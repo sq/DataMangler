@@ -32,6 +32,7 @@ namespace Squared.Data.Mangler.Internal {
     internal unsafe struct IndexEntry {
         public long KeyOffset, DataOffset;
         public uint KeyLength, DataLength;
+        // This has to be a 32-bit type to use CAS :(
         public int IsValid;
     }
 }
@@ -330,6 +331,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 var pEntry = (IndexEntry*)rawPtr.Pointer;
                 *pEntry = indexEntry;
 
+                // I think it might be okay to just do a regular set here,
+                //  and not even use CAS - but it might need a memory barrier.
+                // I'll worry about the performance hit later. :)
                 var wasValid = Interlocked.CompareExchange(ref pEntry->IsValid, 1, 0);
                 if (wasValid != 0)
                     throw new InvalidDataException("Index corrupted");
