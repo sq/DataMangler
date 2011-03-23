@@ -23,6 +23,7 @@ using System.Runtime.InteropServices;
 using System.IO;
 using Microsoft.Win32.SafeHandles;
 using System.Reflection;
+using System.Linq.Expressions;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -60,19 +61,14 @@ namespace Squared.Data.Mangler.Internal {
     internal class StreamRange : IDisposable {
         public readonly StreamRef Stream;
         public readonly MemoryMappedViewAccessor View;
-        public readonly long Offset;
-        public readonly uint Size;
 
-        public StreamRange (StreamRef stream, MemoryMappedViewAccessor view, long offset, uint size) {
+        public StreamRange (StreamRef stream, MemoryMappedViewAccessor view) {
             Stream = stream;
             View = view;
-            Offset = offset;
-            Size = size;
         }
 
         public AcquiredPointer GetPointer () {
-            var result = View.GetPointer(Offset);
-            return result;
+            return View.GetPointer();
         }
 
         public void Dispose () {
@@ -305,7 +301,7 @@ namespace Squared.Data.Mangler.Internal {
                 result = new StreamRange(
                     this, Handle.CreateViewAccessor(
                         offset + HeaderSize, size, access
-                    ), offset + HeaderSize, size
+                    )
                 );
             } catch {
                 Lock.ExitReadLock();
@@ -332,11 +328,11 @@ namespace Squared.Data.Mangler.Internal {
         public readonly SafeBuffer Buffer;
         public readonly byte* Pointer;
 
-        public AcquiredPointer (UnmanagedMemoryAccessor accessor, long offset = 0) {
+        public AcquiredPointer (MemoryMappedViewAccessor accessor, long offset = 0) {
             Buffer = accessor.GetSafeBuffer();
             Pointer = null;
             Buffer.AcquirePointer(ref Pointer);
-            Pointer += offset;
+            Pointer += accessor.GetPointerOffset();
         }
 
         public void Dispose () {
@@ -344,26 +340,81 @@ namespace Squared.Data.Mangler.Internal {
         }
     }
 
+    delegate SafeBuffer GetSafeBufferFunc (UnmanagedMemoryAccessor accessor);
+    delegate Int64 GetPointerOffsetFunc (MemoryMappedViewAccessor accessor);
+
     public static class UnmanagedMemoryAccesorExtensions {
-        private static readonly FieldInfo BufferField;
+        private static readonly GetSafeBufferFunc _GetSafeBuffer;
+        private static readonly GetPointerOffsetFunc _GetPointerOffset;
 
         static UnmanagedMemoryAccesorExtensions () {
-            BufferField = typeof(UnmanagedMemoryAccessor).GetField(
+            _GetSafeBuffer = CreateGetSafeBuffer();
+            _GetPointerOffset = CreateGetPointerOffset();
+        }
+
+        private static GetSafeBufferFunc CreateGetSafeBuffer () {
+            var t = typeof(UnmanagedMemoryAccessor);
+            var field = t.GetField(
                 "_buffer",
                 System.Reflection.BindingFlags.NonPublic |
                 System.Reflection.BindingFlags.Instance
             );
+            if (field == null)
+                throw new ArgumentNullException();
+
+            var argument = Expression.Parameter(t, "accessor");
+            var expr = Expression.Field(argument, field);
+
+            return Expression.Lambda<GetSafeBufferFunc>(
+                expr, "GetSafeBuffer", new[] { argument }
+            ).Compile();
+        }
+
+        private static GetPointerOffsetFunc CreateGetPointerOffset () {
+            var tAccessor = typeof(MemoryMappedViewAccessor);
+            var tView = tAccessor.Assembly.GetType(
+                "System.IO.MemoryMappedFiles.MemoryMappedView", true
+            );
+
+            var fieldView = tAccessor.GetField(
+                "m_view",
+                System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Instance
+            );
+            if (fieldView == null)
+                throw new ArgumentNullException();
+
+            var fieldOffset = tView.GetField(
+                "m_pointerOffset",
+                System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Instance
+            );
+            if (fieldOffset == null)
+                throw new ArgumentNullException();
+
+            var argument = Expression.Parameter(tAccessor, "accessor");
+            var expr = Expression.Field(
+                Expression.Field(argument, fieldView), fieldOffset
+            );
+
+            return Expression.Lambda<GetPointerOffsetFunc>(
+                expr, "GetPointerOffset", new[] { argument }
+            ).Compile();
         }
         
         internal static SafeBuffer GetSafeBuffer (this UnmanagedMemoryAccessor accessor) {
-            var buffer = BufferField.GetValue(accessor) as SafeBuffer;
+            var buffer = _GetSafeBuffer(accessor);
             if (buffer == null)
                 throw new InvalidDataException();
             return buffer;
         }
 
-        internal static AcquiredPointer GetPointer (this UnmanagedMemoryAccessor accessor, long offset) {
-            return new AcquiredPointer(accessor, offset);
+        internal static AcquiredPointer GetPointer (this MemoryMappedViewAccessor accessor) {
+            return new AcquiredPointer(accessor);
+        }
+
+        internal static Int64 GetPointerOffset (this MemoryMappedViewAccessor accessor) {
+            return _GetPointerOffset(accessor);
         }
     }
 }

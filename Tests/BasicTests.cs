@@ -78,5 +78,31 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set("hello", 3));
             Assert.AreEqual(3, Scheduler.WaitFor(Tangle.Get("hello")));
         }
+
+        protected IEnumerator<object> WriteLotsOfValues (Tangle<int> tangle, int numIterations) {
+            var futures = new List<IFuture>();
+            const int batchSize = 4;
+
+            for (int i = 0; i < numIterations; i++) {
+                var key = new TangleKey(i);
+                var f = tangle.Set(key, i);
+                futures.Add(f);
+
+                if (futures.Count >= batchSize) {
+                    yield return Future.WaitForAll(futures);
+                    futures.Clear();
+                }
+            }
+        }
+
+        [Test]
+        public void CanWriteLotsOfValuesQuickly () {
+            const int numValues = 5000;
+            Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues));
+            var rng = new Random();
+            for (int i = 0; i < numValues; i += rng.Next(5, 70)) {
+                Assert.AreEqual(i, Scheduler.WaitFor(Tangle.Get(new TangleKey(i))));
+            }
+        }
     }
 }

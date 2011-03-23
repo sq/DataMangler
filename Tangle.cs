@@ -25,13 +25,14 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Squared.Data.Mangler.Internal;
 using System.Xml.Serialization;
+using System.IO.MemoryMappedFiles;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     internal unsafe struct IndexEntry {
         public long KeyOffset, DataOffset;
         public uint KeyLength, DataLength;
-        public byte Valid;
+        public int IsValid;
     }
 }
 
@@ -131,6 +132,11 @@ namespace Squared.Data.Mangler {
             };
         }
 
+        public const string ExplanatoryPlaceholderText =
+@"This is a DataMangler database. 
+All the actual data is stored in NTFS streams attached to this file.
+For more information, see http://support.microsoft.com/kb/105763.";
+
         public const uint CurrentFormatVersion = 1;
 
         public readonly string Filename;
@@ -154,6 +160,8 @@ namespace Squared.Data.Mangler {
             Serializer = serializer ?? DefaultSerializer;
             Deserializer = deserializer ?? DefaultDeserializer;
 
+            File.WriteAllText(Filename, ExplanatoryPlaceholderText);
+
             IndexStream = new StreamRef(Filename, "index");
             KeyStream = new StreamRef(Filename, "keys");
             DataStream = new StreamRef(Filename, "data");
@@ -174,7 +182,7 @@ namespace Squared.Data.Mangler {
             where U : struct {
             uint entrySize = (uint)Marshal.SizeOf(typeof(U));
             long spot = stream.AllocateSpace(entrySize);
-            using (var range = stream.AccessRange(spot, entrySize))
+            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
                 range.View.Write<U>(0, ref value);
             return spot;
         }
@@ -182,7 +190,7 @@ namespace Squared.Data.Mangler {
         private static long StreamAppend (StreamRef stream, ArraySegment<byte> data) {
             uint entrySize = (uint)data.Count;
             long spot = stream.AllocateSpace(entrySize);
-            using (var range = stream.AccessRange(spot, entrySize))
+            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
                 range.View.WriteArray(0, data.Array, data.Offset, data.Count);
             return spot;
         }
@@ -248,15 +256,15 @@ namespace Squared.Data.Mangler {
             fixed (byte * pLhs = &key.KeyData.Array[key.KeyData.Offset])
             for (long position = 0; (position + entrySize) <= length; position += entrySize) {
 
-                using (var indexRange = IndexStream.AccessRange(position, entrySize))
+                using (var indexRange = IndexStream.AccessRange(position, entrySize, MemoryMappedFileAccess.Read))
                 using (var rawPtr = indexRange.GetPointer()) {
                     var pEntry = (IndexEntry *)rawPtr.Pointer;
 
-                    if (pEntry->Valid != 1)
+                    if (pEntry->IsValid != 1)
                         continue;
 
                     using (var keyRange = KeyStream.AccessRange(
-                        pEntry->KeyOffset, pEntry->KeyLength
+                        pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
                     ))
                     using (var rhs = keyRange.GetPointer()) {
 
@@ -297,7 +305,7 @@ namespace Squared.Data.Mangler {
                 KeyOffset = keyPos,
                 DataLength = dataLen,
                 KeyLength = (uint)key.KeyData.Count,
-                Valid = 1
+                IsValid = 0
             };
         }
 
@@ -311,9 +319,21 @@ namespace Squared.Data.Mangler {
         }
 
         private void InternalSet (TangleKey key, T value) {
+            uint entrySize = (uint)Marshal.SizeOf(typeof(IndexEntry));
+
             IndexEntry indexEntry;
             WriteNewPair(key, ref value, out indexEntry);
-            StreamAppend(IndexStream, ref indexEntry);
+
+            long offset = IndexStream.AllocateSpace(entrySize);
+            using (var indexRange = IndexStream.AccessRange(offset, entrySize, MemoryMappedFileAccess.ReadWrite))
+            using (var rawPtr = indexRange.GetPointer()) {
+                var pEntry = (IndexEntry*)rawPtr.Pointer;
+                *pEntry = indexEntry;
+
+                var wasValid = Interlocked.CompareExchange(ref pEntry->IsValid, 1, 0);
+                if (wasValid != 0)
+                    throw new InvalidDataException("Index corrupted");
+            }
         }
 
         private bool InternalGet (TangleKey key, out T value) {
@@ -350,7 +370,7 @@ namespace Squared.Data.Mangler {
 
                 var size = (int)stream.Length;
                 var buffer = new byte[size];
-                using (var access = stream.AccessRange(0, (uint)size))
+                using (var access = stream.AccessRange(0, (uint)size, MemoryMappedFileAccess.Read))
                     access.View.ReadArray(0, buffer, 0, size);
                 fs.Write(buffer, 0, size);
             }
