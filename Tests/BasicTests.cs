@@ -54,6 +54,25 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [Test]
+        public void NonExistentKeysThrow () {
+            try {
+                Scheduler.WaitFor(Tangle.Get("missing"));
+                Assert.Fail("Should have thrown");
+            } catch (FutureException fe) {
+                Assert.IsInstanceOf<KeyNotFoundException>(fe.InnerException);
+            } catch {
+                throw;
+            }
+        }
+
+        [Test]
+        public void NumericKeysWork () {
+            var key = new TangleKey(1234);
+            Scheduler.WaitFor(Tangle.Set(key, 1));
+            Assert.AreEqual(1, Scheduler.WaitFor(Tangle.Get(key)));
+        }
+
+        [Test]
         public void CanOverwriteExistingValueBySettingItAgain () {
             Scheduler.WaitFor(Tangle.Set("hello", 1));
             Scheduler.WaitFor(Tangle.Set("hello", 3));

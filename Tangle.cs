@@ -46,15 +46,41 @@ namespace Squared.Data.Mangler {
     public delegate void TangleDeserializer<T> (Stream input, out T output);
 
     public struct TangleKey {
+        private readonly Type OriginalType;
         public readonly ArraySegment<byte> KeyData;
 
-        public TangleKey (string key) {
-            var array = Encoding.ASCII.GetBytes(key);
-            KeyData = new ArraySegment<byte>(array);
+        public TangleKey (uint key)
+            : this(BitConverter.GetBytes(key)) {
+            OriginalType = typeof(uint);
+        }
+
+        public TangleKey (ulong key)
+            : this(BitConverter.GetBytes(key)) {
+            OriginalType = typeof(ulong);
+        }
+
+        public TangleKey (int key)
+            : this(BitConverter.GetBytes(key)) {
+            OriginalType = typeof(int);
+        }
+
+        public TangleKey (long key)
+            : this(BitConverter.GetBytes(key)) {
+            OriginalType = typeof(long);
+        }
+
+        public TangleKey (string key)
+            : this (Encoding.ASCII.GetBytes(key)) {
+            OriginalType = typeof(string);
+        }
+
+        public TangleKey (byte[] array)
+            : this(array, 0, array.Length) {
         }
 
         public TangleKey (byte[] array, int offset, int count) {
             KeyData = new ArraySegment<byte>(array, offset, count);
+            OriginalType = typeof(byte[]);
         }
 
         public static implicit operator TangleKey (string key) {
@@ -62,7 +88,22 @@ namespace Squared.Data.Mangler {
         }
 
         public override string ToString () {
-            return Encoding.ASCII.GetString(KeyData.Array, KeyData.Offset, KeyData.Count);
+            if (OriginalType == typeof(string)) {
+                return Encoding.ASCII.GetString(KeyData.Array, KeyData.Offset, KeyData.Count);
+            } else if (OriginalType == typeof(int)) {
+                return BitConverter.ToInt32(KeyData.Array, KeyData.Offset).ToString();
+            } else if (OriginalType == typeof(uint)) {
+                return BitConverter.ToUInt32(KeyData.Array, KeyData.Offset).ToString();
+            } else if (OriginalType == typeof(long)) {
+                return BitConverter.ToInt64(KeyData.Array, KeyData.Offset).ToString();
+            } else if (OriginalType == typeof(ulong)) {
+                return BitConverter.ToUInt64(KeyData.Array, KeyData.Offset).ToString();
+            } else {
+                var sb = new StringBuilder();
+                for (int i = 0; i < KeyData.Count; i++)
+                    sb.AppendFormat("{0:X2}", KeyData.Array[i + KeyData.Offset]);
+                return sb.ToString();
+            }
         }
     }
 
