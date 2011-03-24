@@ -31,7 +31,13 @@ using Squared.Util;
 using System.Collections.Concurrent;
 
 namespace Squared.Data.Mangler.Internal {
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 4)]
+    internal unsafe struct BTreeNodeHeader {
+        public byte IsValid, NumValues;
+        public const int MaxIndexEntries = 4;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 16)]
     internal unsafe struct IndexEntry {
         public static readonly uint Size;
 
@@ -39,10 +45,16 @@ namespace Squared.Data.Mangler.Internal {
             Size = (uint)Marshal.SizeOf(typeof(IndexEntry));
         }
 
-        public uint KeyOffset, DataOffset;
-        public ushort KeyLength;
+        [FieldOffset(0)]
+        public uint DataOffset;
+        [FieldOffset(4)]
         public uint DataLength;
-        public byte KeyType;
+        [FieldOffset(8)]
+        public uint KeyOffset;
+        [FieldOffset(12)]
+        public ushort KeyLength;
+        [FieldOffset(14)]
+        public ushort KeyType;
     }
 }
 
@@ -57,8 +69,8 @@ namespace Squared.Data.Mangler {
     }
 
     public struct TangleKey {
-        private static readonly Dictionary<byte, Type> TypeIdToType = new Dictionary<byte, Type>();
-        private static readonly Dictionary<Type, byte> TypeToTypeId = new Dictionary<Type, byte>();
+        private static readonly Dictionary<ushort, Type> TypeIdToType = new Dictionary<ushort, Type>();
+        private static readonly Dictionary<Type, ushort> TypeToTypeId = new Dictionary<Type, ushort>();
 
         static TangleKey () {
             RegisterType<string>();
@@ -70,17 +82,17 @@ namespace Squared.Data.Mangler {
         }
 
         private static void RegisterType<T> () {
-            if (TypeToTypeId.Count > 254)
+            if (TypeToTypeId.Count >= (ushort.MaxValue - 2))
                 throw new InvalidOperationException("Too many registered types");
 
             var type = typeof(T);
-            byte id = (byte)(TypeToTypeId.Count + 1);
+            ushort id = (byte)(TypeToTypeId.Count + 1);
             TypeToTypeId[type] = id;
             TypeIdToType[id] = type;
         }
 
-        public readonly byte OriginalTypeId;
-        public readonly ArraySegment<byte> KeyData;
+        public readonly ushort OriginalTypeId;
+        public readonly ArraySegment<byte> Data;
 
         public TangleKey (uint key)
             : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(uint)]) {
@@ -110,17 +122,17 @@ namespace Squared.Data.Mangler {
             : this(array, offset, count, TypeToTypeId[typeof(string)]) {
         }
 
-        public TangleKey (byte[] array, byte originalType)
+        public TangleKey (byte[] array, ushort originalType)
             : this(array, 0, array.Length, originalType) {
         }
 
-        public TangleKey (byte[] array, int offset, int count, byte originalType) {
+        public TangleKey (byte[] array, int offset, int count, ushort originalType) {
             if (count >= ushort.MaxValue)
                 throw new InvalidDataException("Key too long");
             if (originalType == 0)
                 throw new InvalidDataException("Invalid key type");
 
-            KeyData = new ArraySegment<byte>(array, offset, count);
+            Data = new ArraySegment<byte>(array, offset, count);
             OriginalTypeId = originalType;
         }
 
@@ -135,17 +147,17 @@ namespace Squared.Data.Mangler {
                 var type = OriginalType;
 
                 if (type == typeof(string)) {
-                    return Encoding.ASCII.GetString(KeyData.Array, KeyData.Offset, KeyData.Count);
+                    return Encoding.ASCII.GetString(Data.Array, Data.Offset, Data.Count);
                 } else if (type == typeof(int)) {
-                    return BitConverter.ToInt32(KeyData.Array, KeyData.Offset);
+                    return BitConverter.ToInt32(Data.Array, Data.Offset);
                 } else if (type == typeof(uint)) {
-                    return BitConverter.ToUInt32(KeyData.Array, KeyData.Offset);
+                    return BitConverter.ToUInt32(Data.Array, Data.Offset);
                 } else if (type == typeof(long)) {
-                    return BitConverter.ToInt64(KeyData.Array, KeyData.Offset);
+                    return BitConverter.ToInt64(Data.Array, Data.Offset);
                 } else if (type == typeof(ulong)) {
-                    return BitConverter.ToUInt64(KeyData.Array, KeyData.Offset);
+                    return BitConverter.ToUInt64(Data.Array, Data.Offset);
                 } else /* if (type == typeof(byte[])) */ {
-                    return KeyData;
+                    return Data;
                 }
             }
         }
@@ -175,8 +187,8 @@ namespace Squared.Data.Mangler {
 
             if (value is ArraySegment<byte>) {
                 var sb = new StringBuilder();
-                for (int i = 0; i < KeyData.Count; i++)
-                    sb.AppendFormat("{0:X2}", KeyData.Array[i + KeyData.Offset]);
+                for (int i = 0; i < Data.Count; i++)
+                    sb.AppendFormat("{0:X2}", Data.Array[i + Data.Offset]);
                 return sb.ToString();
             } else {
                 return value.ToString();
@@ -613,7 +625,7 @@ namespace Squared.Data.Mangler {
         }
          */
 
-        private StreamRange AccessIndex (long index) {
+        private StreamRange AccessIndex (long index, MemoryMappedFileAccess access) {
             long count = (IndexStream.Length / IndexEntry.Size);
 
             if ((index < 0) || (index >= count))
@@ -622,21 +634,21 @@ namespace Squared.Data.Mangler {
                 ), "index");
 
             long position = index * IndexEntry.Size;
-            return IndexStream.AccessRange(position, IndexEntry.Size, MemoryMappedFileAccess.Read);
+            return IndexStream.AccessRange(position, IndexEntry.Size, access);
         }
 
         private unsafe bool IndexEntryByKey (long firstIndex, long indexCount, ref TangleKey rhs, out IndexEntry resultEntry, out long resultIndex) {
-            uint lengthRhs = (uint)rhs.KeyData.Count;
+            uint lengthRhs = (uint)rhs.Data.Count;
             long min = firstIndex, max = firstIndex + indexCount - 1;
             long pivot;
             int delta = 0;
 
-            fixed (byte * pRhs = &rhs.KeyData.Array[rhs.KeyData.Offset])
+            fixed (byte * pRhs = &rhs.Data.Array[rhs.Data.Offset])
             while (min <= max) {
 
                 pivot = min + ((max - min) >> 1);
 
-                using (var indexRange = AccessIndex(pivot)) {
+                using (var indexRange = AccessIndex(pivot, MemoryMappedFileAccess.Read)) {
                     var pEntry = (IndexEntry *)indexRange.Pointer;
                     if (pEntry->KeyType == 0)
                         throw new InvalidDataException();
@@ -761,7 +773,7 @@ namespace Squared.Data.Mangler {
             if (writeMode == WriteModes.AppendData)
                 dataOffset = DataStream.AllocateSpace(count);
 
-            using (var range = AccessIndex(index)) {
+            using (var range = AccessIndex(index, MemoryMappedFileAccess.Write)) {
                 var pEntry = (IndexEntry*)range.Pointer;
 
                 var kt = pEntry->KeyType;
@@ -779,7 +791,7 @@ namespace Squared.Data.Mangler {
 
         private unsafe void WriteKey (ref IndexEntry indexEntry, ref TangleKey key) {
             using (var keyRange = KeyStream.AccessRange(indexEntry.KeyOffset, indexEntry.KeyLength, MemoryMappedFileAccess.Write))
-                WriteBytes(keyRange.Pointer, 0, key.KeyData);
+                WriteBytes(keyRange.Pointer, 0, key.Data);
         }
 
         // IndexEntry must be fully prepared for the write operation:
@@ -865,7 +877,7 @@ namespace Squared.Data.Mangler {
                 throw new InvalidDataException();
 
             if (writeMode == WriteModes.InsertIndex || writeMode == WriteModes.AppendIndex)
-                keyOffset = KeyStream.AllocateSpace((uint)key.KeyData.Count);
+                keyOffset = KeyStream.AllocateSpace((uint)key.Data.Count);
 
             if (writeMode != WriteModes.ReplaceData)
                 dataOffset = DataStream.AllocateSpace((uint)segment.Count);
@@ -881,7 +893,7 @@ namespace Squared.Data.Mangler {
                         DataOffset = (uint)dataOffset.Value,
                         KeyOffset = (uint)keyOffset,
                         DataLength = (uint)segment.Count,
-                        KeyLength = (ushort)key.KeyData.Count,
+                        KeyLength = (ushort)key.Data.Count,
                         KeyType = 0
                     };
 
@@ -905,7 +917,7 @@ namespace Squared.Data.Mangler {
         }
 
         private unsafe TangleKey GetKeyFromIndex (long index) {
-            using (var indexRange = AccessIndex(index)) {
+            using (var indexRange = AccessIndex(index, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry *)indexRange.Pointer;
                 if (pEntry->KeyType == 0)
                     throw new InvalidDataException();
@@ -959,7 +971,7 @@ namespace Squared.Data.Mangler {
             if ((index < 0) || (index >= Count))
                 throw new IndexOutOfRangeException();
 
-            using (var range = AccessIndex(index)) {
+            using (var range = AccessIndex(index, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry*)range.Pointer;
                 ReadData(ref *pEntry, out result);
             }
