@@ -199,18 +199,27 @@ namespace Squared.Data.Mangler.Internal {
         public readonly MemoryMappedFile File;
         public readonly long FileLength;
         public readonly int Capacity;
-        private readonly Dictionary<MemoryMappedFileAccess, Queue<CacheEntry>> Cache = new Dictionary<MemoryMappedFileAccess,Queue<CacheEntry>>(16);
+        private readonly Queue<CacheEntry> ReadCache, ReadWriteCache;
 
         public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 4) {
             File = file;
             FileLength = fileLength;
             Capacity = capacity;
+            ReadCache = new Queue<CacheEntry>(capacity);
+            ReadWriteCache = new Queue<CacheEntry>(capacity);
         }
 
         public Ref CreateView (long offset, uint size, MemoryMappedFileAccess access) {
+            if (access == MemoryMappedFileAccess.Write)
+                access = MemoryMappedFileAccess.ReadWrite;
+
             Queue<CacheEntry> cache;
-            if (!Cache.TryGetValue(access, out cache))
-                Cache[access] = cache = new Queue<CacheEntry>(Capacity);
+            if (access == MemoryMappedFileAccess.Read)
+                cache = ReadCache;
+            else if (access == MemoryMappedFileAccess.ReadWrite)
+                cache = ReadWriteCache;
+            else
+                throw new ArgumentException("Invalid access mode: Only Read, ReadWrite and Write are acceptable");
 
             foreach (var item in cache) {
                 if (offset < item.Offset)
@@ -226,13 +235,13 @@ namespace Squared.Data.Mangler.Internal {
                 ce.RemoveRef();
             }
 
-            const uint pageSize = 1024 * 128;
+            const uint chunkSize = 1024 * 1024 * 8;
 
-            var actualOffset = (offset / pageSize * pageSize);
+            var actualOffset = (offset / chunkSize * chunkSize);
             if (actualOffset < 0)
                 actualOffset = 0;
 
-            var actualEnd = ((offset + size) + (pageSize - 1)) / pageSize * pageSize;
+            var actualEnd = ((offset + size) + (chunkSize - 1)) / chunkSize * chunkSize;
             if (actualEnd < actualOffset)
                 actualEnd = actualOffset;
             if (actualEnd >= FileLength)
@@ -240,7 +249,7 @@ namespace Squared.Data.Mangler.Internal {
 
             var actualSize = (uint)(actualEnd - actualOffset);
 
-            var view = File.CreateViewAccessor(actualOffset, actualSize, MemoryMappedFileAccess.ReadWrite);
+            var view = File.CreateViewAccessor(actualOffset, actualSize, access);
 
             var newEntry = new CacheEntry(view, actualOffset, actualSize);
             cache.Enqueue(newEntry);
@@ -248,11 +257,10 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         public void Dispose () {
-            foreach (var cache in Cache.Values)
-                while (cache.Count > 0)
-                    cache.Dequeue().Dispose();
-
-            Cache.Clear();
+            while (ReadCache.Count > 0)
+                ReadCache.Dequeue().Dispose();
+            while (ReadWriteCache.Count > 0)
+                ReadWriteCache.Dequeue().Dispose();
         }
     }
 

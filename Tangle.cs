@@ -405,7 +405,7 @@ namespace Squared.Data.Mangler {
         public const uint CurrentFormatVersion = 1;
         public const int MaxSerializationBufferSize = 1024 * 64;
 
-        public static readonly int WorkerThreadTimeoutMs = 10000;
+        public static readonly int WorkerThreadTimeoutMs = 30000;
 
         public readonly bool OwnsStorage;
         public readonly StreamSource Storage;
@@ -418,11 +418,11 @@ namespace Squared.Data.Mangler {
         internal Squared.Task.Internal.WorkerThread<ConcurrentQueue<IWorkItem<T>>> _WorkerThread;
 
         private MemoryStream SerializationBuffer;
+        private long _WastedDataBytes = 0;
 
         private readonly StreamRef IndexStream;
         private readonly StreamRef KeyStream;
         private readonly StreamRef DataStream;
-
 
         public Tangle (
             TaskScheduler scheduler, 
@@ -675,14 +675,20 @@ namespace Squared.Data.Mangler {
             return false;
         }
 
-        private long IndexCount {
+        public long Count {
             get {
                 return (IndexStream.Length / IndexEntry.Size);
             }
         }
 
+        public long WastedDataBytes {
+            get {
+                return _WastedDataBytes;
+            }
+        }
+
         private bool IndexEntryByKey (ref TangleKey key, out IndexEntry resultEntry, out long resultIndex) {
-            return IndexEntryByKey(0, IndexCount, ref key, out resultEntry, out resultIndex);
+            return IndexEntryByKey(0, Count, ref key, out resultEntry, out resultIndex);
         }
 
         private void ReadData (ref IndexEntry entry, out T value) {
@@ -742,7 +748,7 @@ namespace Squared.Data.Mangler {
         }
 
         private unsafe void InternalSetFoundValue (long index, long existingOffset, uint existingLength, ref T value) {
-            if ((index < 0) || (index >= IndexCount))
+            if ((index < 0) || (index >= Count))
                 throw new IndexOutOfRangeException();
 
             var segment = Serialize(ref value);
@@ -794,6 +800,8 @@ namespace Squared.Data.Mangler {
                 using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write))
                     ZeroBytes(range.Pointer, 0, indexEntry.DataLength);
 
+                _WastedDataBytes += indexEntry.DataLength;
+
                 indexEntry.DataOffset = (uint)dataOffset.Value;
                 indexEntry.DataLength = count;
             } else if (writeMode != WriteModes.ReplaceData) {
@@ -822,7 +830,7 @@ namespace Squared.Data.Mangler {
             long offset = 0, keyOffset = 0;
             long? dataOffset = null;
             long positionToClear = 0, emptyPosition = 0;
-            long index, count = IndexCount;
+            long index, count = Count;
 
             bool foundExisting = IndexEntryByKey(0, count, ref key, out indexEntry, out index);
             offset = index * IndexEntry.Size;
@@ -948,7 +956,7 @@ namespace Squared.Data.Mangler {
         }
 
         private unsafe void InternalGetFoundValue (long index, long dataOffset, long dataLength, out T result) {
-            if ((index < 0) || (index >= IndexCount))
+            if ((index < 0) || (index >= Count))
                 throw new IndexOutOfRangeException();
 
             using (var range = AccessIndex(index)) {
