@@ -687,9 +687,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
             long index, count = IndexCount;
 
             bool foundExisting = IndexEntryByKey(0, count, ref key, out indexEntry, out index);
+            offset = index * IndexEntry.Size;
 
             if (!foundExisting) {
-                offset = index * IndexEntry.Size;
                 var newSpot = IndexStream.AllocateSpace(IndexEntry.Size);
 
                 if (index < count) {
@@ -715,13 +715,10 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 Serializer(ref value, ms);
 
                 if (foundExisting) {
-                    if (ms.Length > indexEntry.DataLength) {
-                        offset = index * IndexEntry.Size;
+                    if (ms.Length > indexEntry.DataLength)
                         writeMode = WriteModes.AppendData;
-                    } else {
-                        offset = index * IndexEntry.Size;
+                    else
                         writeMode = WriteModes.ReplaceData;
-                    }
                 }
 
                 if (writeMode == WriteModes.Invalid)

@@ -270,5 +270,37 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set("hello", "long string"));
             Assert.AreEqual("long string", Scheduler.WaitFor(Tangle.Get("hello")));
         }
+
+        [Test]
+        public void UpdateGrowthWorks () {
+            var s = "a";
+            Scheduler.WaitFor(Tangle.Set("test", s));
+
+            Tangle<string>.UpdateCallback callback = (str) => str + "a";
+
+            for (int i = 0; i < 10; i++) {
+                s = s + "a";
+
+                Scheduler.WaitFor(Tangle.AddOrUpdate("test", null, callback));
+
+                Assert.AreEqual(s, Scheduler.WaitFor(Tangle.Get("test")));
+            }
+        }
+
+        [Test]
+        public void UpdateShrinkageWorks () {
+            var s = new String('a', 11);
+            Scheduler.WaitFor(Tangle.Set("test", s));
+
+            Tangle<string>.UpdateCallback callback = (str) => str.Substring(0, str.Length - 1);
+
+            for (int i = 0; i < 10; i++) {
+                s = s.Substring(0, s.Length - 1);
+
+                Scheduler.WaitFor(Tangle.AddOrUpdate("test", null, callback));
+
+                Assert.AreEqual(s, Scheduler.WaitFor(Tangle.Get("test")));
+            }
+        }
     }
 }
