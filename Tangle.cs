@@ -19,6 +19,7 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Linq;
 using Squared.Data.Mangler.Serialization;
 using Squared.Task;
 using System.IO;
@@ -36,7 +37,7 @@ namespace Squared.Data.Mangler.Internal {
         public static readonly uint OffsetOfValues;
         public static readonly uint OffsetOfLeaves;
 
-        public const int T = 4;
+        public const int T = 16;
         public const int MaxValues = (2 * T) - 1;
         public const int MaxLeaves = MaxValues + 1;
 
@@ -95,9 +96,14 @@ namespace Squared.Data.Mangler {
     public class KeyNotFoundException : Exception {
         public readonly TangleKey Key;
 
-        public KeyNotFoundException (TangleKey key)
-            : base("The specified key was not found in the tangle.") {
+        public KeyNotFoundException (TangleKey key) {
             Key = key;
+        }
+
+        public override string Message {
+            get {
+                return String.Format("The key '{0}' was not found.", Key);
+            }
         }
     }
 
@@ -687,9 +693,9 @@ namespace Squared.Data.Mangler {
                     var compareLength = Math.Min(pEntry->KeyLength, searchKeyLength);
                     delta = Native.memcmp(pLhs, pSearchKey, new UIntPtr(compareLength));
                     if (delta == 0) {
-                        if (pEntry->KeyLength > compareLength)
+                        if (pEntry->KeyLength > searchKeyLength)
                             delta = 1;
-                        else if (searchKeyLength > compareLength)
+                        else if (searchKeyLength > pEntry->KeyLength)
                             delta = -1;
                     }
                 }
@@ -737,7 +743,7 @@ namespace Squared.Data.Mangler {
             long nodeCount = BTreeNodeCount;
             parentNodeIndex = IndexStream.RootIndex;
             parentValueIndex = 0;
-            long currentNode = IndexStream.RootIndex;
+            long currentNode = parentNodeIndex;
 
             fixed (byte * pKey = &key.Data.Array[key.Data.Offset])
             while (currentNode >= 0 && currentNode < nodeCount)
@@ -768,9 +774,21 @@ namespace Squared.Data.Mangler {
                         }
 
                         BTreeSplitLeafNode(newRootIndex, 0, currentNode);
+
+                        // Restart at the root
+                        nodeCount = BTreeNodeCount;
+                        currentNode = parentNodeIndex =IndexStream.RootIndex;
+                        parentValueIndex = 0;
+                        continue;
                     } else {
                         // Splitting a regular node.
-                        throw new NotImplementedException();
+                        BTreeSplitLeafNode(parentNodeIndex, parentValueIndex, currentNode);
+
+                        // Restart at the root
+                        nodeCount = BTreeNodeCount;
+                        currentNode = parentNodeIndex = IndexStream.RootIndex;
+                        parentValueIndex = 0;
+                        continue;
                     }
                 }
 
@@ -784,8 +802,10 @@ namespace Squared.Data.Mangler {
                 if (pNode->HasLeaves == 1) {
                     // No exact match was found, so valueIndex now contains the index of the leaf node.
                     var pLeaves = (BTreeLeaf *)(range.Pointer + BTreeNode.OffsetOfLeaves);
+
                     parentNodeIndex = currentNode;
                     parentValueIndex = valueIndex;
+
                     currentNode = pLeaves[valueIndex].NodeIndex;
                 } else {                    
                     // The value was not found inside the node, and we're in a node with no leaves, so there is no match.
@@ -812,11 +832,6 @@ namespace Squared.Data.Mangler {
 
                 if (valueIndex < pNode->NumValues) {
                     // Move values
-                    /*
-                    for (var j = pNode->NumValues; j > valueIndex; j--)
-                        pValues[j] = pValues[j - 1];
-                     */
-
                     Native.memmove(
                         (byte*)(&pValues[valueIndex + 1]),
                         (byte*)(&pValues[valueIndex]),
@@ -826,15 +841,10 @@ namespace Squared.Data.Mangler {
 
                 if (pNode->HasLeaves == 1) {
                     // Move leaves
-                    /*
-                    for (var j = (pNode->NumValues + 1); j > (valueIndex + 1); j--)
-                        pLeaves[j] = pLeaves[j - 1];
-                     */
-
                     Native.memmove(
+                        (byte*)(&pLeaves[valueIndex + 2]),
                         (byte*)(&pLeaves[valueIndex + 1]),
-                        (byte*)(&pLeaves[valueIndex]),
-                        new UIntPtr((pNode->NumValues - valueIndex + 1) * BTreeLeaf.Size)
+                        new UIntPtr((pNode->NumValues - valueIndex) * BTreeLeaf.Size)
                     );
                 }
 
@@ -854,7 +864,7 @@ namespace Squared.Data.Mangler {
                     throw new InvalidDataException();
 
                 pValues[valueIndex] = value;
-                pLeaves[valueIndex] = leaf;
+                pLeaves[valueIndex + 1] = leaf;
 
                 pNode->IsValid = 1;
             }
@@ -902,7 +912,7 @@ namespace Squared.Data.Mangler {
                 var newLeaf = new BTreeLeaf(newIndex);
                 BTreeInsert(
                     parentNodeIndex, leafValueIndex,
-                    ref pLeafValues[BTreeNode.T], ref newLeaf
+                    ref pLeafValues[BTreeNode.T - 1], ref newLeaf
                 );
             }
         }
@@ -1155,8 +1165,6 @@ namespace Squared.Data.Mangler {
                     };
 
                     WriteKey(ref *pEntry, ref key);
-                } else {
-                    int i = 0;
                 }
 
                 WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
@@ -1178,6 +1186,11 @@ namespace Squared.Data.Mangler {
             }
 
             return true;
+        }
+
+        private struct NodeInfo {
+            public long Node;
+            public long? Parent;
         }
 
         /*
@@ -1206,18 +1219,49 @@ namespace Squared.Data.Mangler {
             }
         }
 
+        private unsafe string StringifyNode (long nodeIndex) {
+            using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.Read))
+                return StringifyNode((BTreeNode *)range.Pointer);
+        }
+
+        private unsafe string StringifyNode (BTreeNode * pNode) {
+            var sb = new StringBuilder();
+            var pValues = (IndexEntry *)(((byte *)pNode) + BTreeNode.OffsetOfValues);
+            var pLeaves = (BTreeLeaf *)(((byte *)pNode) + BTreeNode.OffsetOfLeaves);
+
+            for (int i = 0; i < pNode->NumValues; i++) {
+                if (pNode->HasLeaves == 1)
+                    sb.AppendFormat("{1} {2} ", pLeaves[i].NodeIndex, StringifyNode(pLeaves[i].NodeIndex), GetKeyOfEntry(&pValues[i]));
+                else
+                    sb.AppendFormat("{0} ", GetKeyOfEntry(&pValues[i]));
+            }
+
+            if (pNode->HasLeaves == 1)
+                sb.AppendFormat("{1}", pLeaves[pNode->NumValues].NodeIndex, StringifyNode(pLeaves[pNode->NumValues].NodeIndex));
+
+            return sb.ToString();
+        }
+
+        public string Stringify () {
+            return StringifyNode(IndexStream.RootIndex);
+        }
+
+        private unsafe TangleKey GetKeyOfEntry (IndexEntry* pEntry) {
+            using (var keyRange = KeyStream.AccessRange(
+                pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
+            )) {
+                byte[] buffer = new byte[pEntry->KeyLength];
+                ReadBytes(keyRange.Pointer, 0, buffer, 0, pEntry->KeyLength);
+
+                return new TangleKey(buffer, pEntry->KeyType);
+            }
+        }
+
         private unsafe TangleKey GetKeyOfNodeValue (long nodeIndex, uint valueIndex) {
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry *)range.Pointer;
-                
-                using (var keyRange = KeyStream.AccessRange(
-                    pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
-                )) {
-                    byte[] buffer = new byte[pEntry->KeyLength];
-                    ReadBytes(keyRange.Pointer, 0, buffer, 0, pEntry->KeyLength);
 
-                    return new TangleKey(buffer, pEntry->KeyType);
-                }
+                return GetKeyOfEntry(pEntry);
             }
         }
 

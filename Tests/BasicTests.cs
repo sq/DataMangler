@@ -195,16 +195,18 @@ namespace Squared.Data.Mangler.Tests {
 
         protected IEnumerator<object> WriteLotsOfValues (Tangle<int> tangle, int numIterations, int direction) {
             if (direction > 0)
-                for (int i = 0; i < numIterations; i++)
+                for (int i = 0; i < numIterations; i++) {
                     yield return tangle.Set(i, i);
+                }
             else
-                for (int i = numIterations - 1; i >= 0; i--)
+                for (int i = numIterations - 1; i >= 0; i--) {
                     yield return tangle.Set(i, i);
+                }
         }
 
         [Test]
         public void CanWriteLotsOfValuesSequentially () {
-            const int numValues = 200;
+            const int numValues = 150000;
 
             long startTime = Time.Ticks;
             Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues, 1));
@@ -225,7 +227,7 @@ namespace Squared.Data.Mangler.Tests {
 
         [Test]
         public void CanWriteLotsOfValuesInReverse () {
-            const int numValues = 200;
+            const int numValues = 150000;
 
             long startTime = Time.Ticks;
             Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues, -1));
@@ -234,8 +236,6 @@ namespace Squared.Data.Mangler.Tests {
                 "Wrote {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
                 numValues, elapsedSeconds, numValues / elapsedSeconds
             );
-
-            Console.WriteLine(String.Join(", ", (from k in Tangle.Keys select k.Value.ToString()).ToArray()));
 
             startTime = Time.Ticks;
             Scheduler.WaitFor(CheckLotsOfValues(Tangle, numValues));
