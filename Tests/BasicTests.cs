@@ -141,6 +141,35 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [Test]
+        public void AddOrUpdateInvokesCallbackWhenKeyIsFound () {
+            Scheduler.WaitFor(Tangle.Add("a", 1));
+            Scheduler.WaitFor(Tangle.AddOrUpdate("a", 999, (oldValue) => oldValue + 1));
+            Scheduler.WaitFor(Tangle.AddOrUpdate("b", 128, (oldValue) => oldValue + 1));
+
+            Assert.AreEqual(2, Scheduler.WaitFor(Tangle.Get("a")));
+            Assert.AreEqual(128, Scheduler.WaitFor(Tangle.Get("b")));
+        }
+
+        [Test]
+        public void AddOrUpdateCallbackCanAbortUpdate () {
+            Scheduler.WaitFor(Tangle.Add("a", 1));
+            Scheduler.WaitFor(Tangle.AddOrUpdate("a", 999, (ref int value) => false));
+
+            Assert.AreEqual(1, Scheduler.WaitFor(Tangle.Get("a")));
+        }
+
+        [Test]
+        public void AddOrUpdateCallbackCanMutateValue () {
+            Scheduler.WaitFor(Tangle.Add("a", 1));
+            Scheduler.WaitFor(Tangle.AddOrUpdate("a", 999, (ref int value) => {
+                value += 1;
+                return true;
+            }));
+
+            Assert.AreEqual(2, Scheduler.WaitFor(Tangle.Get("a")));
+        }
+
+        [Test]
         public void InsertInSequentialOrder () {
             Scheduler.WaitFor(Tangle.Set("aa", 4));
             Scheduler.WaitFor(Tangle.Set("ea", 3));

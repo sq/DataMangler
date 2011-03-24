@@ -192,10 +192,11 @@ namespace Squared.Data.Mangler {
     /// <typeparam name="T">The type of the value stored within the tangle.</typeparam>
     public unsafe class Tangle<T> : IDisposable {
         enum WriteModes {
+            Invalid,
             AppendIndex, // Append new index entry, write new key and data
             InsertIndex, // Insert new index entry, write new key and data
             ReplaceData, // Write data over existing data, update index
-            AppendData   // Append new data, erase existing data, update index
+            AppendData,   // Append new data, erase existing data, update index
         }
 
         public struct FindResult {
@@ -220,6 +221,25 @@ namespace Squared.Data.Mangler {
                 return Tangle.SetValueByIndex(Index, DataOffset, DataLength, newValue);
             }
         }
+
+        /// <summary>
+        /// Called to update a value within the tangle.
+        /// </summary>
+        /// <param name="oldValue">The current value of the item.</param>
+        /// <returns>The new value of the item.</returns>
+        public delegate T UpdateCallback (T oldValue);
+
+        /// <summary>
+        /// Called to update a value within the tangle.
+        /// </summary>
+        /// <param name="value">The current value of the item. Change it and return true if you wish to modify the item.</param>
+        /// <returns>True to update the item's value, false to abort.</returns>
+        public delegate bool DecisionUpdateCallback (ref T value);
+
+        private delegate bool ReplaceCallback (ref IndexEntry indexEntry, ref T newValue);
+
+        private static readonly ReplaceCallback AlwaysReplace = _AlwaysReplace;
+        private static readonly ReplaceCallback NeverReplace = _NeverReplace;
 
         public const string ExplanatoryPlaceholderText =
 @"This is a DataMangler database. 
@@ -361,10 +381,18 @@ For more information, see http://support.microsoft.com/kb/105763.";
         public IFuture Set (TangleKey key, T value) {
             var f = new SignalFuture();
             QueueWorkItem(f, () => {
-                InternalSet(key, value, true);
+                InternalSet(key, value, AlwaysReplace);
                 f.Complete();
             });
             return f;
+        }
+
+        private static bool _AlwaysReplace (ref IndexEntry indexEntry, ref T newValue) {
+            return true;
+        }
+
+        private static bool _NeverReplace (ref IndexEntry indexEntry, ref T newValue) {
+            return false;
         }
 
         /// <summary>
@@ -374,7 +402,45 @@ For more information, see http://support.microsoft.com/kb/105763.";
         public Future<bool> Add (TangleKey key, T value) {
             var f = new Future<bool>();
             QueueWorkItem(f, () => {
-                f.SetResult(InternalSet(key, value, false), null);
+                f.SetResult(InternalSet(key, value, NeverReplace), null);
+            });
+            return f;
+        }
+
+        /// <summary>
+        /// Stores a value into the tangle, assigning it a given key. If the given key already has an associated value, a callback is invoked to determine the new value for the key.
+        /// </summary>
+        /// <returns>A future that completes once the value has been stored to disk.</returns>
+        public Future<bool> AddOrUpdate (TangleKey key, T value, UpdateCallback updateCallback) {
+            ReplaceCallback replaceCallback = 
+                (ref IndexEntry indexEntry, ref T newValue) => {
+                    T oldValue;
+                    ReadValue(ref indexEntry, out oldValue);
+                    newValue = updateCallback(oldValue);
+                    return true;
+                };
+
+            var f = new Future<bool>();
+            QueueWorkItem(f, () => {
+                f.SetResult(InternalSet(key, value, replaceCallback), null);
+            });
+            return f;
+        }
+
+        /// <summary>
+        /// Stores a value into the tangle, assigning it a given key. If the given key already has an associated value, a callback is invoked to determine the new value for the key.
+        /// </summary>
+        /// <returns>A future that completes once the value has been stored to disk.</returns>
+        public Future<bool> AddOrUpdate (TangleKey key, T value, DecisionUpdateCallback updateCallback) {
+            ReplaceCallback replaceCallback =
+                (ref IndexEntry indexEntry, ref T newValue) => {
+                    ReadValue(ref indexEntry, out newValue);
+                    return updateCallback(ref newValue);
+                };
+
+            var f = new Future<bool>();
+            QueueWorkItem(f, () => {
+                f.SetResult(InternalSet(key, value, replaceCallback), null);
             });
             return f;
         }
@@ -585,6 +651,8 @@ For more information, see http://support.microsoft.com/kb/105763.";
         private unsafe void WriteData (ref IndexEntry indexEntry, ref ArraySegment<byte> data, WriteModes writeMode, long dataOffset) {
             if (indexEntry.IsValid != 0)
                 throw new InvalidDataException();
+            if (writeMode == WriteModes.Invalid)
+                throw new InvalidDataException();
 
             var count = (uint)data.Count;
 
@@ -611,41 +679,53 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
         }
 
-        private unsafe bool InternalSet (TangleKey key, T value, bool allowOverwrite) {
-            WriteModes writeMode;
+        private unsafe bool InternalSet (TangleKey key, T value, ReplaceCallback replacementCallback) {
+            WriteModes writeMode = WriteModes.Invalid;
             IndexEntry indexEntry;
-            long offset, dataOffset = 0, keyOffset = 0;
+            long offset = 0, dataOffset = 0, keyOffset = 0;
             long positionToClear = 0, emptyPosition = 0;
+            long index, count = IndexCount;
+
+            bool foundExisting = IndexEntryByKey(0, count, ref key, out indexEntry, out index);
+
+            if (!foundExisting) {
+                offset = index * IndexEntry.Size;
+                var newSpot = IndexStream.AllocateSpace(IndexEntry.Size);
+
+                if (index < count) {
+                    writeMode = WriteModes.InsertIndex;
+                    positionToClear = offset;
+                    emptyPosition = newSpot;
+                } else {
+                    writeMode = WriteModes.AppendIndex;
+                    offset = newSpot;
+                }
+            } else {
+                if (replacementCallback == NeverReplace)
+                    return false;
+
+                if (replacementCallback != AlwaysReplace) {
+                    bool shouldContinue = replacementCallback(ref indexEntry, ref value);
+                    if (!shouldContinue)
+                        return false;
+                }
+            }
 
             using (var ms = new MemoryStream()) {
                 Serializer(ref value, ms);
 
-                long index, count = IndexCount;
-                if (!IndexEntryByKey(0, count, ref key, out indexEntry, out index)) {
-                    offset = index * IndexEntry.Size;
-                    var newSpot = IndexStream.AllocateSpace(IndexEntry.Size);
-
-                    if (index < count) {
-                        writeMode = WriteModes.InsertIndex;
-                        positionToClear = offset;
-                        emptyPosition = newSpot;
+                if (foundExisting) {
+                    if (ms.Length > indexEntry.DataLength) {
+                        offset = index * IndexEntry.Size;
+                        writeMode = WriteModes.AppendData;
                     } else {
-                        writeMode = WriteModes.AppendIndex;
-                        offset = newSpot;
+                        offset = index * IndexEntry.Size;
+                        writeMode = WriteModes.ReplaceData;
                     }
-                } else if (ms.Length > indexEntry.DataLength) {
-                    if (!allowOverwrite)
-                        return false;
-
-                    offset = index * IndexEntry.Size;
-                    writeMode = WriteModes.AppendData;
-                } else {
-                    if (!allowOverwrite)
-                        return false;
-
-                    offset = index * IndexEntry.Size;
-                    writeMode = WriteModes.ReplaceData;
                 }
+
+                if (writeMode == WriteModes.Invalid)
+                    throw new InvalidDataException();
 
                 if (writeMode == WriteModes.InsertIndex || writeMode == WriteModes.AppendIndex)
                     keyOffset = KeyStream.AllocateSpace((uint)key.KeyData.Count);
