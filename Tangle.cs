@@ -37,7 +37,7 @@ namespace Squared.Data.Mangler.Internal {
         public static readonly uint OffsetOfValues;
         public static readonly uint OffsetOfLeaves;
 
-        public const int T = 16;
+        public const int T = 32;
         public const int MaxValues = (2 * T) - 1;
         public const int MaxLeaves = MaxValues + 1;
 
@@ -884,7 +884,7 @@ namespace Squared.Data.Mangler {
             var tMinus1 = BTreeNode.T - 1;
 
             using (var leafRange = AccessBTreeNode(leafNodeIndex, MemoryMappedFileAccess.ReadWrite))
-            using (var newRange = AccessBTreeNode(newIndex, MemoryMappedFileAccess.Write)) {
+            using (var newRange = AccessBTreeNode(newIndex, MemoryMappedFileAccess.ReadWrite)) {
                 var pLeaf = (BTreeNode *)leafRange.Pointer;
                 var pLeafValues = (IndexEntry *)(leafRange.Pointer + BTreeNode.OffsetOfValues);
                 var pLeafLeaves = (BTreeLeaf *)(leafRange.Pointer + BTreeNode.OffsetOfLeaves);
@@ -908,12 +908,10 @@ namespace Squared.Data.Mangler {
 
                 pLeaf->NumValues = (ushort)tMinus1;
 
-                for (var j = 0; j <= tMinus1; j++)
-                    pNewValues[j] = pLeafValues[j + BTreeNode.T];
+                Native.memmove((byte *)pNewValues, (byte *)&pLeafValues[BTreeNode.T], new UIntPtr(BTreeNode.T * IndexEntry.Size));
 
                 if (pLeaf->HasLeaves == 1)
-                    for (var j = 0; j <= BTreeNode.T; j++)
-                        pNewLeaves[j] = pLeafLeaves[j + BTreeNode.T];
+                    Native.memmove((byte*)pNewLeaves, (byte*)&pLeafLeaves[BTreeNode.T], new UIntPtr((BTreeNode.T + 1) * BTreeLeaf.Size));
 
                 pNew->IsValid = 1;
                 pLeaf->IsValid = 1;
@@ -925,53 +923,6 @@ namespace Squared.Data.Mangler {
                 );
             }
         }
-
-        /*
-        private unsafe void BTreeInsert (ref long nodeIndex, ref uint leafIndex) {
-            bool isRoot = (nodeIndex == IndexStream.RootIndex);
-
-            using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
-                var pNode = (BTreeNode *)range.Pointer;
-                pNode->IsValid = 0;
-
-                var pValues = (IndexEntry *)(range.Pointer + BTreeNode.OffsetOfValues);
-
-                bool isFull = (pNode->NumValues >= BTreeNode.MaxValues);
-                if (isFull) {
-                    int newCount = pNode->NumValues + 1;
-                    int median = newCount / 2;
-
-                    // newCount should always be odd for the median split algorithm to work right
-                    if ((newCount % 2) == 0)
-                        throw new InvalidDataException();
-
-                    if (pNode->HasLeaves == 0) {
-                        BTreeSplitLeafNode(pNode->ParentNode, pNode, nodeIndex);
-                    } else {
-                        throw new NotImplementedException();
-                    }
-
-                } else {
-                    // Insert into node values, maintaining sorted order
-                    if (leafIndex < pNode->NumValues) {
-                        // Move values
-                        Native.memmove(
-                            (byte*)(&pValues[leafIndex + 1]),
-                            (byte*)(&pValues[leafIndex]),
-                            new UIntPtr((pNode->NumValues - leafIndex) * IndexEntry.Size)
-                        );
-
-                        if (pNode->HasLeaves != 0)
-                            throw new NotImplementedException();
-                    }
-
-                    pNode->NumValues += 1;
-                }
-
-                pNode->IsValid = 1;
-            }
-        }
-         */
 
         private unsafe long CreateBTreeNode () {
             long offset = IndexStream.AllocateSpace(BTreeNode.TotalSize);

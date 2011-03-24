@@ -202,7 +202,7 @@ namespace Squared.Data.Mangler.Internal {
         public readonly int Capacity;
         private readonly Queue<CacheEntry> ReadCache, ReadWriteCache;
 
-        public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 4) {
+        public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 3) {
             File = file;
             FileLength = fileLength;
             Capacity = capacity;
@@ -267,8 +267,8 @@ namespace Squared.Data.Mangler.Internal {
 
     internal class StreamRef : IDisposable {
         public static readonly uint HeaderSize = (uint)Marshal.SizeOf(typeof(StreamHeader));
-        public const uint InitialCapacity = 32 * 1024;
-        public const uint GrowthRate = 64 * 1024;
+        public const uint InitialCapacity = 64 * 1024;
+        public const uint GrowthRate = 128 * 1024;
 
         protected ViewCache Cache;
         protected MemoryMappedFile Handle;
