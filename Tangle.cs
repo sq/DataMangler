@@ -783,7 +783,7 @@ namespace Squared.Data.Mangler {
                         Native.memmove(
                             (byte *)(&pValues[leafIndex + 1]), 
                             (byte *)(&pValues[leafIndex]), 
-                            new UIntPtr(pNode->NumValues - leafIndex)
+                            new UIntPtr((pNode->NumValues - leafIndex) * IndexEntry.Size)
                         );
 
                     pNode->NumValues += 1;
