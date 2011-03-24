@@ -1067,8 +1067,8 @@ namespace Squared.Data.Mangler {
         }
 
         private static void ReadBytes (byte * ptr, long offset, byte[] buffer, long bufferOffset, uint count) {
-            for (uint i = 0; i < count; i++)
-                buffer[i + bufferOffset] = ptr[i + offset];
+            fixed (byte* pDest = &buffer[bufferOffset])
+                Native.memmove(pDest, ptr + offset, new UIntPtr((uint)count));
         }
 
         private static void WriteBytes (byte* ptr, long offset, ArraySegment<byte> bytes) {
@@ -1076,13 +1076,12 @@ namespace Squared.Data.Mangler {
         }
 
         private static void WriteBytes (byte* ptr, long offset, byte[] source, int sourceOffset, int count) {
-            for (uint i = 0; i < count; i++)
-                ptr[i + offset] = source[i + sourceOffset];
+            fixed (byte* pSource = &source[sourceOffset])
+                Native.memmove(ptr + offset, pSource, new UIntPtr((uint)count));
         }
 
         private static void ZeroBytes (byte* ptr, long offset, uint count) {
-            for (uint i = 0; i < count; i++)
-                ptr[i + offset] = 0;
+            Native.memset(ptr + offset, 0, new UIntPtr((uint)count));
         }
 
         private unsafe void InternalSetFoundValue (long nodeIndex, uint valueIndex, ref T value) {

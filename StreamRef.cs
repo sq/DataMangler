@@ -267,8 +267,7 @@ namespace Squared.Data.Mangler.Internal {
 
     internal class StreamRef : IDisposable {
         public static readonly uint HeaderSize = (uint)Marshal.SizeOf(typeof(StreamHeader));
-        public const uint InitialCapacity = 64 * 1024;
-        public const uint GrowthRate = 128 * 1024;
+        public const uint ChunkSize = 256 * 1024;
 
         protected ViewCache Cache;
         protected MemoryMappedFile Handle;
@@ -283,7 +282,7 @@ namespace Squared.Data.Mangler.Internal {
             NativeStream = nativeStream;
             OwnsStream = ownsStream;
 
-            CreateHandles(InitialCapacity);
+            CreateHandles(ChunkSize);
         }
 
         protected void CreateHandles (long capacity) {
@@ -315,7 +314,7 @@ namespace Squared.Data.Mangler.Internal {
             // We grow the stream by a fixed amount every time we run out
             //  of space. Doubling or some other algorithm might be better,
             //  but this is simple and predictable.
-            var newCapacity = (capacity + GrowthRate - 1) / GrowthRate * GrowthRate;
+            var newCapacity = (capacity + ChunkSize - 1) / ChunkSize * ChunkSize;
 
             DisposeViews();
 
