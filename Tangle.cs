@@ -763,12 +763,31 @@ namespace Squared.Data.Mangler {
         /// Prepares the BTree for the insertion of a new value at a given location.
         /// If the tree has to be modified in order to make room for the insert operation, 
         ///  this function will update the <paramref name="nodeIndex"/> and <paramref name="leafIndex"/> parameters to point at the new insertion location.
+        /// The destination BTree node has its value count automatically incremented, and any existing values are moved out of the destination location.
         /// </summary>
         /// <param name="nodeIndex">The index of the BTree node that contains the insert location.</param>
         /// <param name="leafIndex">The leaf location where the insert should occur.</param>
         private unsafe void BTreeInsert (ref long nodeIndex, ref uint leafIndex) {
+            bool isRoot = (nodeIndex == IndexStream.RootIndex);
+
             using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
-                throw new NotImplementedException();
+                var pNode = (BTreeNode *)range.Pointer;
+
+                bool isFull = (pNode->NumValues >= BTreeNode.MaxValues);
+                if (isFull) {
+                    throw new NotImplementedException();
+                } else {
+                    var pValues = (IndexEntry *)(range.Pointer + BTreeNode.OffsetOfValues);
+
+                    if (leafIndex < pNode->NumValues)
+                        Native.memmove(
+                            (byte *)(&pValues[leafIndex + 1]), 
+                            (byte *)(&pValues[leafIndex]), 
+                            new UIntPtr(pNode->NumValues - leafIndex)
+                        );
+
+                    pNode->NumValues += 1;
+                }
             }
         }
 
@@ -994,16 +1013,39 @@ namespace Squared.Data.Mangler {
         }
          */
 
+        private unsafe uint GetNodeValueCount (long nodeIndex) {
+            using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.Read)) {
+                var pNode = (BTreeNode *)range.Pointer;
+                return pNode->NumValues;
+            }
+        }
+
+        private unsafe TangleKey GetKeyOfNodeValue (long nodeIndex, uint valueIndex) {
+            using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
+                var pEntry = (IndexEntry *)range.Pointer;
+                
+                using (var keyRange = KeyStream.AccessRange(
+                    pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
+                )) {
+                    byte[] buffer = new byte[pEntry->KeyLength];
+                    ReadBytes(keyRange.Pointer, 0, buffer, 0, pEntry->KeyLength);
+
+                    return new TangleKey(buffer, pEntry->KeyType);
+                }
+            }
+        }
+
         public IEnumerable<TangleKey> Keys {
             get {
-                throw new NotImplementedException();
+                // This should be a depth-first search of the tree...
 
-                /*
                 long count = BTreeNodeCount;
-                for (long i = 0; i < count; i++)
-                using (var range = AccessBTreeNode(i, MemoryMappedFileAccess.Read))
-                    // Depth-first search, I think?    
-                */
+                for (long i = 0; i < count; i++) {
+                    uint numValues = GetNodeValueCount(i);
+
+                    for (uint j = 0; j < numValues; j++)
+                        yield return GetKeyOfNodeValue(i, j);
+                }
             }
         }
 
