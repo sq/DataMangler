@@ -201,6 +201,7 @@ namespace Squared.Data.Mangler {
             AppendData,   // Append new data, erase existing data, update index
         }
 
+
         public struct FindResult {
             public readonly Tangle<T> Tangle;
             public readonly TangleKey Key;
@@ -220,9 +221,10 @@ namespace Squared.Data.Mangler {
             }
 
             public IFuture SetValue (T newValue) {
-                return Tangle.SetValueByIndex(Index, DataOffset, DataLength, newValue);
+                return Tangle.SetValueByIndex(Index, DataOffset, DataLength, ref newValue);
             }
         }
+
 
         /// <summary>
         /// Called to update a value within the tangle.
@@ -238,18 +240,170 @@ namespace Squared.Data.Mangler {
         /// <returns>True to update the item's value, false to abort.</returns>
         public delegate bool DecisionUpdateCallback (ref T value);
 
-        private delegate bool ReplaceCallback (ref IndexEntry indexEntry, ref T newValue);
+        private interface IReplaceCallback {
+            bool ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue);
+        }
 
-        private static readonly ReplaceCallback AlwaysReplace = _AlwaysReplace;
-        private static readonly ReplaceCallback NeverReplace = _NeverReplace;
+        private class SetThunk : IWorkItem<T>, IReplaceCallback {
+            public readonly Future<bool> Future = new Future<bool>();
+            public readonly TangleKey Key;
+            public T Value;
+            public readonly bool ShouldReplace;
 
-        public const string ExplanatoryPlaceholderText =
-@"This is a DataMangler database. 
-All the actual data is stored in NTFS streams attached to this file.
-For more information, see http://support.microsoft.com/kb/105763.";
+            public SetThunk (ref TangleKey key, ref T value, bool shouldReplace) {
+                Key = key;
+                Value = value;
+                ShouldReplace = shouldReplace;
+            }
+
+            bool IReplaceCallback.ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue) {
+                return ShouldReplace;
+            }
+
+            public void Execute (Tangle<T> tangle) {
+                try {
+                    Future.SetResult(tangle.InternalSet(Key, ref Value, this), null);
+                } catch (Exception ex) {
+                    Future.SetResult(false, ex);
+                }
+            }
+        }
+
+        private class UpdateThunk : IWorkItem<T>, IReplaceCallback {
+            public readonly Future<bool> Future = new Future<bool>();
+            public readonly TangleKey Key;
+            public T Value;
+            public readonly UpdateCallback Callback;
+            public readonly DecisionUpdateCallback DecisionCallback;
+
+            public UpdateThunk (ref TangleKey key, ref T value, UpdateCallback callback) {
+                Key = key;
+                Value = value;
+                Callback = callback;
+                DecisionCallback = null;
+            }
+
+            public UpdateThunk (ref TangleKey key, ref T value, DecisionUpdateCallback callback) {
+                Key = key;
+                Value = value;
+                Callback = null;
+                DecisionCallback = callback;
+            }
+
+            bool IReplaceCallback.ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue) {
+                if (Callback != null) {
+                    T oldValue;
+                    tangle.ReadData(ref indexEntry, out oldValue);
+                    newValue = Callback(oldValue);
+                    return true;
+                } else {
+                    tangle.ReadData(ref indexEntry, out newValue);
+                    return DecisionCallback(ref newValue);
+                }
+            }
+
+            public void Execute (Tangle<T> tangle) {
+                try {
+                    Future.SetResult(tangle.InternalSet(Key, ref Value, this), null);
+                } catch (Exception ex) {
+                    Future.SetResult(false, ex);
+                }
+            }
+        }
+
+        private class GetThunk : IWorkItem<T> {
+            public readonly Future<T> Future = new Future<T>();
+            public readonly TangleKey Key;
+
+            public GetThunk (ref TangleKey key) {
+                Key = key;
+            }
+
+            public void Execute (Tangle<T> tangle) {
+                try {
+                    T result;
+                    if (tangle.InternalGet(Key, out result))
+                        Future.SetResult(result, null);
+                    else
+                        Future.SetResult(result, new KeyNotFoundException(Key));
+                } catch (Exception ex) {
+                    Future.SetResult(default(T), ex);
+                }
+            }
+        }
+
+        private class FindThunk : IWorkItem<T> {
+            public readonly Future<FindResult> Future = new Future<FindResult>();
+            public readonly TangleKey Key;
+
+            public FindThunk (ref TangleKey key) {
+                Key = key;
+            }
+
+            public void Execute (Tangle<T> tangle) {
+                try {
+                    FindResult result;
+                    if (tangle.InternalFind(Key, out result))
+                        Future.SetResult(result, null);
+                    else
+                        Future.SetResult(result, new KeyNotFoundException(Key)); 
+                } catch (Exception ex) {
+                    Future.Fail(ex);
+                }
+            }
+        }
+
+        private class GetByIndexThunk : IWorkItem<T> {
+            public readonly Future<T> Future = new Future<T>();
+            public readonly long Index;
+            public readonly long DataOffset;
+            public readonly uint DataLength;
+
+            public GetByIndexThunk (long index, long dataOffset, uint dataLength) {
+                Index = index;
+                DataOffset = dataOffset;
+                DataLength = dataLength;
+            }
+
+            public void Execute (Tangle<T> tangle) {
+                try {
+                    T result;
+                    tangle.InternalGetFoundValue(Index, DataOffset, DataLength, out result);
+                    Future.SetResult(result, null);
+                } catch (Exception ex) {
+                    Future.SetResult(default(T), ex);
+                }
+            }
+        }
+
+        private class SetByIndexThunk : IWorkItem<T> {
+            public readonly SignalFuture Future = new SignalFuture();
+            public readonly long Index;
+            public readonly long DataOffset;
+            public readonly uint DataLength;
+            public T Value;
+
+            public SetByIndexThunk (long index, long dataOffset, uint dataLength, ref T value) {
+                Index = index;
+                DataOffset = dataOffset;
+                DataLength = dataLength;
+                Value = value;
+            }
+
+            public void Execute (Tangle<T> tangle) {
+                try {
+                    tangle.InternalSetFoundValue(Index, DataOffset, DataLength, ref Value);
+                    Future.Complete();
+                } catch (Exception ex) {
+                    Future.Fail(ex);
+                }
+            }
+        }
+
 
         public const bool TraceKeyInsertions = false;
         public const uint CurrentFormatVersion = 1;
+        public const int MaxSerializationBufferSize = 1024 * 64;
 
         public static readonly int WorkerThreadTimeoutMs = 10000;
 
@@ -261,16 +415,14 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
         protected readonly ReaderWriterLockSlim IndexLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
 
-        protected struct WorkItem {
-            public IFuture Future;
-            public Action Action;
-        }
+        internal Squared.Task.Internal.WorkerThread<ConcurrentQueue<IWorkItem<T>>> _WorkerThread;
 
-        protected Squared.Task.Internal.WorkerThread<ConcurrentQueue<WorkItem>> _WorkerThread;
+        private MemoryStream SerializationBuffer;
 
         private readonly StreamRef IndexStream;
         private readonly StreamRef KeyStream;
         private readonly StreamRef DataStream;
+
 
         public Tangle (
             TaskScheduler scheduler, 
@@ -293,6 +445,25 @@ For more information, see http://support.microsoft.com/kb/105763.";
             VersionCheck(IndexStream);
             VersionCheck(KeyStream);
             VersionCheck(DataStream);
+        }
+
+        private ArraySegment<byte> Serialize (ref T value) {
+            if (SerializationBuffer == null)
+                SerializationBuffer = new MemoryStream();
+
+            Serializer(ref value, SerializationBuffer);
+
+            var result = new ArraySegment<byte>(SerializationBuffer.GetBuffer(), 0, (int)SerializationBuffer.Length);
+
+            if (SerializationBuffer.Capacity > MaxSerializationBufferSize) {
+                SerializationBuffer.Dispose();
+                SerializationBuffer = null;
+            } else {
+                SerializationBuffer.Seek(0, SeekOrigin.Begin);
+                SerializationBuffer.SetLength(0);
+            }
+
+            return result;
         }
 
         private static void VersionCheck (StreamRef stream) {
@@ -319,7 +490,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
             long spot = stream.AllocateSpace((uint)data.Count);
 
             using (var range = stream.AccessRange(spot, (uint)data.Count, MemoryMappedFileAccess.Write))
-                WriteBytes(range, 0, data);
+                WriteBytes(range.Pointer, 0, data);
 
             return spot;
         }
@@ -330,34 +501,21 @@ For more information, see http://support.microsoft.com/kb/105763.";
         /// <returns>A future that will contain the value once it has been read.</returns>
         /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
         public Future<T> Get (TangleKey key) {
-            var f = new Future<T>();
-            QueueWorkItem(f, () => {
-                T result;
-                if (InternalGet(key, out result))
-                    f.SetResult(result, null);
-                else
-                    f.SetResult(result, new KeyNotFoundException(key));
-            });
-            return f;
+            var thunk = new GetThunk(ref key);
+            QueueWorkItem(thunk);
+            return thunk.Future;
         }
 
         protected Future<T> GetValueByIndex (long index, long dataOffset, uint dataLength) {
-            var f = new Future<T>();
-            QueueWorkItem(f, () => {
-                T result;
-                InternalGetFoundValue(index, dataOffset, dataLength, out result);
-                f.SetResult(result, null);
-            });
-            return f;
+            var thunk = new GetByIndexThunk(index, dataOffset, dataLength);
+            QueueWorkItem(thunk);
+            return thunk.Future;
         }
 
-        protected IFuture SetValueByIndex (long index, long existingOffset, uint existingLength, T value) {
-            var f = new SignalFuture();
-            QueueWorkItem(f, () => {
-                InternalSetFoundValue(index, existingOffset, existingLength, value);
-                f.Complete();
-            });
-            return f;
+        protected IFuture SetValueByIndex (long index, long dataOffset, uint dataLength, ref T value) {
+            var thunk = new SetByIndexThunk(index, dataOffset, dataLength, ref value);
+            QueueWorkItem(thunk);
+            return thunk.Future;
         }
 
         /// <summary>
@@ -366,15 +524,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
         /// <returns>A future that will contain a reference to the key, if it was found.</returns>
         /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
         public Future<FindResult> Find (TangleKey key) {
-            var f = new Future<FindResult>();
-            QueueWorkItem(f, () => {
-                FindResult result;
-                if (InternalFind(key, out result))
-                    f.SetResult(result, null);
-                else
-                    f.SetResult(result, new KeyNotFoundException(key));
-            });
-            return f;
+            var thunk = new FindThunk(ref key);
+            QueueWorkItem(thunk);
+            return thunk.Future;
         }
 
         /// <summary>
@@ -382,20 +534,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public IFuture Set (TangleKey key, T value) {
-            var f = new SignalFuture();
-            QueueWorkItem(f, () => {
-                InternalSet(key, value, AlwaysReplace);
-                f.Complete();
-            });
-            return f;
-        }
-
-        private static bool _AlwaysReplace (ref IndexEntry indexEntry, ref T newValue) {
-            return true;
-        }
-
-        private static bool _NeverReplace (ref IndexEntry indexEntry, ref T newValue) {
-            return false;
+            var thunk = new SetThunk(ref key, ref value, true);
+            QueueWorkItem(thunk);
+            return thunk.Future;
         }
 
         /// <summary>
@@ -403,11 +544,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk. The future's value will be false if the operation was aborted.</returns>
         public Future<bool> Add (TangleKey key, T value) {
-            var f = new Future<bool>();
-            QueueWorkItem(f, () => {
-                f.SetResult(InternalSet(key, value, NeverReplace), null);
-            });
-            return f;
+            var thunk = new SetThunk(ref key, ref value, false);
+            QueueWorkItem(thunk);
+            return thunk.Future;
         }
 
         /// <summary>
@@ -415,19 +554,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public Future<bool> AddOrUpdate (TangleKey key, T value, UpdateCallback updateCallback) {
-            ReplaceCallback replaceCallback = 
-                (ref IndexEntry indexEntry, ref T newValue) => {
-                    T oldValue;
-                    ReadData(ref indexEntry, out oldValue);
-                    newValue = updateCallback(oldValue);
-                    return true;
-                };
-
-            var f = new Future<bool>();
-            QueueWorkItem(f, () => {
-                f.SetResult(InternalSet(key, value, replaceCallback), null);
-            });
-            return f;
+            var thunk = new UpdateThunk(ref key, ref value, updateCallback);
+            QueueWorkItem(thunk);
+            return thunk.Future;
         }
 
         /// <summary>
@@ -435,42 +564,27 @@ For more information, see http://support.microsoft.com/kb/105763.";
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public Future<bool> AddOrUpdate (TangleKey key, T value, DecisionUpdateCallback updateCallback) {
-            ReplaceCallback replaceCallback =
-                (ref IndexEntry indexEntry, ref T newValue) => {
-                    ReadData(ref indexEntry, out newValue);
-                    return updateCallback(ref newValue);
-                };
-
-            var f = new Future<bool>();
-            QueueWorkItem(f, () => {
-                f.SetResult(InternalSet(key, value, replaceCallback), null);
-            });
-            return f;
+            var thunk = new UpdateThunk(ref key, ref value, updateCallback);
+            QueueWorkItem(thunk);
+            return thunk.Future;
         }
 
-        private void QueueWorkItem (IFuture future, Action action) {
+        private void QueueWorkItem (IWorkItem<T> workItem) {
             if (_WorkerThread == null)
-                _WorkerThread = new Squared.Task.Internal.WorkerThread<ConcurrentQueue<WorkItem>>(
+                _WorkerThread = new Squared.Task.Internal.WorkerThread<ConcurrentQueue<IWorkItem<T>>>(
                     WorkerThreadFunc, ThreadPriority.Normal, String.Format("Tangle<{0}> Worker", typeof(T).ToString())
                 );
 
-            _WorkerThread.WorkItems.Enqueue(new WorkItem {
-                Future = future,
-                Action = action
-            });
+            _WorkerThread.WorkItems.Enqueue(workItem);
 
             _WorkerThread.Wake();
         }
 
-        protected void WorkerThreadFunc (ConcurrentQueue<WorkItem> workItems, ManualResetEvent newWorkItemEvent) {
+        internal void WorkerThreadFunc (ConcurrentQueue<IWorkItem<T>> workItems, ManualResetEvent newWorkItemEvent) {
             while (true) {
-                WorkItem item;
+                IWorkItem<T> item;
                 while (workItems.TryDequeue(out item)) {
-                    try {
-                        item.Action();
-                    } catch (Exception ex) {
-                        item.Future.Fail(ex);
-                    }
+                    item.Execute(this);
                 }
 
                 if (!newWorkItemEvent.WaitOne(WorkerThreadTimeoutMs))
@@ -580,20 +694,17 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 Deserializer(ms, out value);
         }
 
-        private static void ReadBytes (StreamRange range, long offset, byte[] buffer, long bufferOffset, uint count) {
-            var ptr = range.Pointer;
+        private static void ReadBytes (byte * ptr, long offset, byte[] buffer, long bufferOffset, uint count) {
             for (uint i = 0; i < count; i++)
                 buffer[i + bufferOffset] = ptr[i + offset];
         }
 
-        private static void WriteBytes (StreamRange range, long offset, ArraySegment<byte> bytes) {
-            var ptr = range.Pointer;
+        private static void WriteBytes (byte* ptr, long offset, ArraySegment<byte> bytes) {
             for (uint i = 0; i < bytes.Count; i++)
                 ptr[i + offset] = bytes.Array[i + bytes.Offset];
         }
 
-        private static void ZeroBytes (StreamRange range, long offset, uint count) {
-            var ptr = range.Pointer;
+        private static void ZeroBytes (byte* ptr, long offset, uint count) {
             for (uint i = 0; i < count; i++)
                 ptr[i + offset] = 0;
         }
@@ -630,43 +741,39 @@ For more information, see http://support.microsoft.com/kb/105763.";
             }
         }
 
-        private unsafe void InternalSetFoundValue (long index, long existingOffset, uint existingLength, T value) {
+        private unsafe void InternalSetFoundValue (long index, long existingOffset, uint existingLength, ref T value) {
             if ((index < 0) || (index >= IndexCount))
                 throw new IndexOutOfRangeException();
 
-            using (var ms = new MemoryStream()) {
-                Serializer(ref value, ms);
+            var segment = Serialize(ref value);
+            uint count = (uint)segment.Count;
 
-                var segment = ms.GetSegment();
-                uint count = (uint)segment.Count;
+            long dataOffset = existingOffset;
+            WriteModes writeMode = (segment.Count > existingLength) ?
+                WriteModes.AppendData : WriteModes.ReplaceData;
 
-                long dataOffset = existingOffset;
-                WriteModes writeMode = (ms.Length > existingLength) ?
-                    WriteModes.AppendData : WriteModes.ReplaceData;
+            if (writeMode == WriteModes.AppendData)
+                dataOffset = DataStream.AllocateSpace(count);
 
-                if (writeMode == WriteModes.AppendData)
-                    dataOffset = DataStream.AllocateSpace(count);
+            using (var range = AccessIndex(index)) {
+                var pEntry = (IndexEntry*)range.Pointer;
 
-                using (var range = AccessIndex(index)) {
-                    var pEntry = (IndexEntry*)range.Pointer;
+                var kt = pEntry->KeyType;
 
-                    var kt = pEntry->KeyType;
+                if ((kt == 0) ||
+                    (pEntry->DataOffset != existingOffset) || 
+                    (pEntry->DataLength != existingLength))
+                    throw new InvalidDataException();
 
-                    if ((kt == 0) ||
-                        (pEntry->DataOffset != existingOffset) || 
-                        (pEntry->DataLength != existingLength))
-                        throw new InvalidDataException();
-
-                    pEntry->KeyType = 0;
-                    WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
-                    pEntry->KeyType = kt;
-                }
+                pEntry->KeyType = 0;
+                WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
+                pEntry->KeyType = kt;
             }
         }
 
         private unsafe void WriteKey (ref IndexEntry indexEntry, ref TangleKey key) {
             using (var keyRange = KeyStream.AccessRange(indexEntry.KeyOffset, indexEntry.KeyLength, MemoryMappedFileAccess.Write))
-                WriteBytes(keyRange, 0, key.KeyData);
+                WriteBytes(keyRange.Pointer, 0, key.KeyData);
         }
 
         // IndexEntry must be fully prepared for the write operation:
@@ -685,7 +792,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
             if (writeMode == WriteModes.AppendData) {
                 using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write))
-                    ZeroBytes(range, 0, indexEntry.DataLength);
+                    ZeroBytes(range.Pointer, 0, indexEntry.DataLength);
 
                 indexEntry.DataOffset = (uint)dataOffset.Value;
                 indexEntry.DataLength = count;
@@ -697,19 +804,19 @@ For more information, see http://support.microsoft.com/kb/105763.";
             }
 
             using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write)) {
-                WriteBytes(range, 0, data);
+                WriteBytes(range.Pointer, 0, data);
 
                 if (writeMode == WriteModes.ReplaceData) {
                     var bytesToZero = indexEntry.DataLength - count;
                     if (bytesToZero > 0)
-                        ZeroBytes(range, count, bytesToZero);
+                        ZeroBytes(range.Pointer, count, bytesToZero);
 
                     indexEntry.DataLength = count;
                 }
             }
         }
 
-        private unsafe bool InternalSet (TangleKey key, T value, ReplaceCallback replacementCallback) {
+        private unsafe bool InternalSet (TangleKey key, ref T value, IReplaceCallback replacementCallback) {
             WriteModes writeMode = WriteModes.Invalid;
             IndexEntry indexEntry;
             long offset = 0, keyOffset = 0;
@@ -732,60 +839,52 @@ For more information, see http://support.microsoft.com/kb/105763.";
                     offset = newSpot;
                 }
             } else {
-                if (replacementCallback == NeverReplace)
+                bool shouldContinue = replacementCallback.ShouldReplace(this, ref indexEntry, ref value);
+                if (!shouldContinue)
                     return false;
-
-                if (replacementCallback != AlwaysReplace) {
-                    bool shouldContinue = replacementCallback(ref indexEntry, ref value);
-                    if (!shouldContinue)
-                        return false;
-                }
             }
 
-            using (var ms = new MemoryStream()) {
-                Serializer(ref value, ms);
+            var segment = Serialize(ref value);
 
-                if (foundExisting) {
-                    if (ms.Length > indexEntry.DataLength)
-                        writeMode = WriteModes.AppendData;
-                    else
-                        writeMode = WriteModes.ReplaceData;
+            if (foundExisting) {
+                if (segment.Count > indexEntry.DataLength)
+                    writeMode = WriteModes.AppendData;
+                else
+                    writeMode = WriteModes.ReplaceData;
+            }
+
+            if (writeMode == WriteModes.Invalid)
+                throw new InvalidDataException();
+
+            if (writeMode == WriteModes.InsertIndex || writeMode == WriteModes.AppendIndex)
+                keyOffset = KeyStream.AllocateSpace((uint)key.KeyData.Count);
+
+            if (writeMode != WriteModes.ReplaceData)
+                dataOffset = DataStream.AllocateSpace((uint)segment.Count);
+
+            if (writeMode == WriteModes.InsertIndex)
+                MoveEntriesForward(positionToClear, emptyPosition);
+
+            using (var indexRange = IndexStream.AccessRange(offset, IndexEntry.Size, MemoryMappedFileAccess.ReadWrite)) {
+                var pEntry = (IndexEntry *)indexRange.Pointer;
+
+                if (writeMode == WriteModes.AppendIndex || writeMode == WriteModes.InsertIndex) {
+                    *pEntry = new IndexEntry {
+                        DataOffset = (uint)dataOffset.Value,
+                        KeyOffset = (uint)keyOffset,
+                        DataLength = (uint)segment.Count,
+                        KeyLength = (ushort)key.KeyData.Count,
+                        KeyType = 0
+                    };
+
+                    WriteKey(ref *pEntry, ref key);
+                } else {
+                    pEntry->KeyType = 0;
                 }
 
-                if (writeMode == WriteModes.Invalid)
-                    throw new InvalidDataException();
+                WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
 
-                if (writeMode == WriteModes.InsertIndex || writeMode == WriteModes.AppendIndex)
-                    keyOffset = KeyStream.AllocateSpace((uint)key.KeyData.Count);
-
-                if (writeMode != WriteModes.ReplaceData)
-                    dataOffset = DataStream.AllocateSpace((uint)ms.Length);
-
-                if (writeMode == WriteModes.InsertIndex)
-                    MoveEntriesForward(positionToClear, emptyPosition);
-
-                using (var indexRange = IndexStream.AccessRange(offset, IndexEntry.Size, MemoryMappedFileAccess.ReadWrite)) {
-                    var pEntry = (IndexEntry *)indexRange.Pointer;
-
-                    if (writeMode == WriteModes.AppendIndex || writeMode == WriteModes.InsertIndex) {
-                        *pEntry = new IndexEntry {
-                            DataOffset = (uint)dataOffset.Value,
-                            KeyOffset = (uint)keyOffset,
-                            DataLength = (uint)ms.Length,
-                            KeyLength = (ushort)key.KeyData.Count,
-                            KeyType = 0
-                        };
-
-                        WriteKey(ref *pEntry, ref key);
-                    } else {
-                        pEntry->KeyType = 0;
-                    }
-
-                    var segment = ms.GetSegment();
-                    WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
-
-                    pEntry->KeyType = key.OriginalTypeId;
-                }
+                pEntry->KeyType = key.OriginalTypeId;
             }
 
             if (TraceKeyInsertions) {
@@ -807,7 +906,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
                     pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
                 )) {
                     var array = new byte[pEntry->KeyLength];
-                    ReadBytes(keyRange, 0, array, 0, pEntry->KeyLength); 
+                    ReadBytes(keyRange.Pointer, 0, array, 0, pEntry->KeyLength); 
 
                     return new TangleKey(array, pEntry->KeyType);
                 }
@@ -882,7 +981,8 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 var size = (int)stream.Length;
                 var buffer = new byte[size];
                 using (var access = stream.AccessRange(0, (uint)size, MemoryMappedFileAccess.Read))
-                    ReadBytes(access, 0, buffer, 0, (uint)size);
+                    ReadBytes(access.Pointer, 0, buffer, 0, (uint)size);
+
                 fs.Write(buffer, 0, size);
             }
         }

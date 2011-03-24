@@ -57,7 +57,7 @@ namespace Squared.Data.Mangler.Internal {
         }
     }
 
-    internal unsafe class StreamRange : IDisposable {
+    internal unsafe struct StreamRange : IDisposable {
         public readonly StreamRef Stream;
 
         public readonly byte* Pointer;
@@ -73,6 +73,7 @@ namespace Squared.Data.Mangler.Internal {
             Offset = offset;
             Size = size;
             Buffer = viewRef.View.GetSafeBuffer();
+            Pointer = null;
             Buffer.AcquirePointer(ref Pointer);
             Pointer += viewRef.View.GetPointerOffset();
             Pointer += (offset - viewRef.Offset);
@@ -140,7 +141,7 @@ namespace Squared.Data.Mangler.Internal {
     }
 
     internal class ViewCache : IDisposable {
-        public class Ref : IDisposable {
+        public struct Ref : IDisposable {
             public readonly MemoryMappedViewAccessor View;
             private readonly CacheEntry Entry;
             
@@ -180,14 +181,6 @@ namespace Squared.Data.Mangler.Internal {
                 RefCount = 1;
             }
 
-            public bool CanSatisfy (long offset, uint size) {
-                if (offset < Offset)
-                    return false;
-                if (offset + size > Offset + Size)
-                    return false;
-                return true;
-            }
-
             public void AddRef () {
                 RefCount += 1;
             }
@@ -205,26 +198,35 @@ namespace Squared.Data.Mangler.Internal {
 
         public readonly MemoryMappedFile File;
         public readonly long FileLength;
-        public readonly uint Capacity;
-        private readonly Queue<CacheEntry> Cache = new Queue<CacheEntry>();
+        public readonly int Capacity;
+        private readonly Dictionary<MemoryMappedFileAccess, Queue<CacheEntry>> Cache = new Dictionary<MemoryMappedFileAccess,Queue<CacheEntry>>(16);
 
-        public ViewCache (MemoryMappedFile file, long fileLength, uint capacity = (uint)4) {
+        public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 4) {
             File = file;
             FileLength = fileLength;
             Capacity = capacity;
         }
 
-        public Ref CreateView (long offset, uint size) {
-            foreach (var item in Cache)
-                if (item.CanSatisfy(offset, size))
-                    return new Ref(item);
+        public Ref CreateView (long offset, uint size, MemoryMappedFileAccess access) {
+            Queue<CacheEntry> cache;
+            if (!Cache.TryGetValue(access, out cache))
+                Cache[access] = cache = new Queue<CacheEntry>(Capacity);
 
-            if (Cache.Count > Capacity) {
-                CacheEntry ce = Cache.Dequeue();
+            foreach (var item in cache) {
+                if (offset < item.Offset)
+                    continue;
+                if (offset + size > item.Offset + item.Size)
+                    continue;
+
+                return new Ref(item);
+            }
+
+            if (cache.Count > Capacity) {
+                CacheEntry ce = cache.Dequeue();
                 ce.RemoveRef();
             }
 
-            const uint pageSize = 1024 * 8;
+            const uint pageSize = 1024 * 128;
 
             var actualOffset = (offset / pageSize * pageSize);
             if (actualOffset < 0)
@@ -241,13 +243,16 @@ namespace Squared.Data.Mangler.Internal {
             var view = File.CreateViewAccessor(actualOffset, actualSize, MemoryMappedFileAccess.ReadWrite);
 
             var newEntry = new CacheEntry(view, actualOffset, actualSize);
-            Cache.Enqueue(newEntry);
+            cache.Enqueue(newEntry);
             return new Ref(newEntry);
         }
 
         public void Dispose () {
-            while (Cache.Count > 0)
-                Cache.Dequeue().Dispose();
+            foreach (var cache in Cache.Values)
+                while (cache.Count > 0)
+                    cache.Dequeue().Dispose();
+
+            Cache.Clear();
         }
     }
 
@@ -368,7 +373,7 @@ namespace Squared.Data.Mangler.Internal {
 
             EnsureCapacity(HeaderSize + offset + actualSize);
 
-            var viewRef = Cache.CreateView(actualBegin, actualSize);
+            var viewRef = Cache.CreateView(actualBegin, actualSize, access);
 
             return new StreamRange(
                 this, viewRef, actualBegin, actualSize
@@ -391,8 +396,17 @@ namespace Squared.Data.Mangler.Internal {
             }
         }
 
+        protected unsafe long GetTotalLength () {
+            using (var header = AccessHeader())
+                return header.Ptr->DataLength + HeaderSize;
+        }
+
         public void Dispose () {
+            long totalLength = GetTotalLength();
+
             DisposeViews();
+
+            NativeStream.SetLength(totalLength);
             if (OwnsStream)
                 NativeStream.Dispose();
         }
