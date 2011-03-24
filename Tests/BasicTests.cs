@@ -81,14 +81,12 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [Test]
-        public void NonExistentKeysThrow () {
+        public void GetThrowsIfKeyIsNotFound () {
             try {
                 Scheduler.WaitFor(Tangle.Get("missing"));
                 Assert.Fail("Should have thrown");
             } catch (FutureException fe) {
                 Assert.IsInstanceOf<KeyNotFoundException>(fe.InnerException);
-            } catch {
-                throw;
             }
         }
 
@@ -104,6 +102,42 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set("hello", 1));
             Scheduler.WaitFor(Tangle.Set("hello", 3));
             Assert.AreEqual(3, Scheduler.WaitFor(Tangle.Get("hello")));
+        }
+
+        [Test]
+        public void AddReturnsFalseInsteadOfOverwriting () {
+            Assert.AreEqual(true, Scheduler.WaitFor(Tangle.Add("hello", 1)));
+            Assert.AreEqual(false, Scheduler.WaitFor(Tangle.Add("hello", 3)));
+            Assert.AreEqual(1, Scheduler.WaitFor(Tangle.Get("hello")));
+        }
+
+        [Test]
+        public void FindReturnsReferenceThatCanBeUsedToFetchValue () {
+            Scheduler.WaitFor(Tangle.Set("a", 1));
+            Scheduler.WaitFor(Tangle.Set("b", 2));
+
+            var itemRef = Scheduler.WaitFor(Tangle.Find("a"));
+            Assert.AreEqual("a", itemRef.Key.ToString());
+            Assert.AreEqual(1, Scheduler.WaitFor(itemRef.GetValue()));
+        }
+
+        [Test]
+        public void FindReturnsReferenceThatCanBeUsedToReplaceValue () {
+            Scheduler.WaitFor(Tangle.Set("a", 1));
+            Scheduler.WaitFor(Tangle.Set("b", 2));
+
+            var itemRef = Scheduler.WaitFor(Tangle.Find("a"));
+            Scheduler.WaitFor(itemRef.SetValue(3));
+        }
+
+        [Test]
+        public void FindThrowsIfKeyIsNotFound () {
+            try {
+                Scheduler.WaitFor(Tangle.Find("missing"));
+                Assert.Fail("Should have thrown");
+            } catch (FutureException fe) {
+                Assert.IsInstanceOf<KeyNotFoundException>(fe.InnerException);
+            }
         }
 
         [Test]
@@ -162,6 +196,50 @@ namespace Squared.Data.Mangler.Tests {
                 yield return f;
                 Assert.AreEqual(i, f.Result);
             }
+        }
+    }
+
+    [TestFixture]
+    public class StringTests : BasicTestFixture {
+        public Tangle<string> Tangle;
+
+        [SetUp]
+        public override void SetUp () {
+            base.SetUp();
+
+            var serializer = new Squared.Data.Mangler.Serialization.StringSerializer(
+                Encoding.UTF8
+            );
+
+            Tangle = new Tangle<string>(
+                Scheduler, Storage,
+                serializer: serializer.Serialize, 
+                deserializer: serializer.Deserialize,
+                ownsStorage: true
+            );
+        }
+
+        [TearDown]
+        public override void TearDown () {
+            // Tangle.ExportStreams(@"C:\dm_streams\");
+            Tangle.Dispose();
+            base.TearDown();
+        }
+
+        [Test]
+        public void OverwritingWithShorterStringWorks () {
+            Scheduler.WaitFor(Tangle.Set("hello", "long string"));
+            Assert.AreEqual("long string", Scheduler.WaitFor(Tangle.Get("hello")));
+            Scheduler.WaitFor(Tangle.Set("hello", "world"));
+            Assert.AreEqual("world", Scheduler.WaitFor(Tangle.Get("hello")));
+        }
+
+        [Test]
+        public void OverwritingWithLongerStringWorks () {
+            Scheduler.WaitFor(Tangle.Set("hello", "world"));
+            Assert.AreEqual("world", Scheduler.WaitFor(Tangle.Get("hello")));
+            Scheduler.WaitFor(Tangle.Set("hello", "long string"));
+            Assert.AreEqual("long string", Scheduler.WaitFor(Tangle.Get("hello")));
         }
     }
 }

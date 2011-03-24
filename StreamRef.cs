@@ -121,7 +121,7 @@ namespace Squared.Data.Mangler.Internal {
             var handle = Native.CreateFile(
                 path,
                 NativeFileAccess.GenericRead | NativeFileAccess.GenericWrite,
-                FileShare.None, IntPtr.Zero, FileMode.OpenOrCreate,
+                FileShare.Delete | FileShare.ReadWrite, IntPtr.Zero, FileMode.OpenOrCreate,
                 NativeFileFlags.RandomAccess, IntPtr.Zero
             );
             if (handle.IsInvalid || handle.IsClosed)

@@ -47,6 +47,15 @@ namespace Squared.Data.Mangler.Internal {
 }
 
 namespace Squared.Data.Mangler {
+    public class KeyNotFoundException : Exception {
+        public readonly TangleKey Key;
+
+        public KeyNotFoundException (TangleKey key)
+            : base("The specified key was not found in the tangle.") {
+            Key = key;
+        }
+    }
+
     public struct TangleKey {
         private static readonly Dictionary<byte, Type> TypeIdToType = new Dictionary<byte, Type>();
         private static readonly Dictionary<Type, byte> TypeToTypeId = new Dictionary<Type, byte>();
@@ -182,6 +191,36 @@ namespace Squared.Data.Mangler {
     /// </summary>
     /// <typeparam name="T">The type of the value stored within the tangle.</typeparam>
     public unsafe class Tangle<T> : IDisposable {
+        enum WriteModes {
+            AppendIndex, // Append new index entry, write new key and data
+            InsertIndex, // Insert new index entry, write new key and data
+            ReplaceData, // Write data over existing data, update index
+            AppendData   // Append new data, erase existing data, update index
+        }
+
+        public struct FindResult {
+            public readonly Tangle<T> Tangle;
+            public readonly TangleKey Key;
+            private readonly long Index, DataOffset;
+            private readonly uint DataLength;
+
+            internal FindResult (Tangle<T> owner, ref TangleKey key, long index, long dataOffset, uint dataLength) {
+                Tangle = owner;
+                Key = key;
+                Index = index;
+                DataOffset = dataOffset;
+                DataLength = dataLength;
+            }
+
+            public Future<T> GetValue () {
+                return Tangle.GetValueByIndex(Index, DataOffset, DataLength);
+            }
+
+            public IFuture SetValue (T newValue) {
+                return Tangle.SetValueByIndex(Index, DataOffset, DataLength, newValue);
+            }
+        }
+
         public const string ExplanatoryPlaceholderText =
 @"This is a DataMangler database. 
 All the actual data is stored in NTFS streams attached to this file.
@@ -266,6 +305,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
         /// Reads a value from the tangle, looking it up via its key.
         /// </summary>
         /// <returns>A future that will contain the value once it has been read.</returns>
+        /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
         public Future<T> Get (TangleKey key) {
             var f = new Future<T>();
             QueueWorkItem(f, () => {
@@ -273,20 +313,68 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 if (InternalGet(key, out result))
                     f.SetResult(result, null);
                 else
-                    f.SetResult(result, new KeyNotFoundException(key.ToString()));
+                    f.SetResult(result, new KeyNotFoundException(key));
+            });
+            return f;
+        }
+
+        protected Future<T> GetValueByIndex (long index, long dataOffset, uint dataLength) {
+            var f = new Future<T>();
+            QueueWorkItem(f, () => {
+                T result;
+                InternalGetFoundValue(index, dataOffset, dataLength, out result);
+                f.SetResult(result, null);
+            });
+            return f;
+        }
+
+        protected IFuture SetValueByIndex (long index, long existingOffset, uint existingLength, T value) {
+            var f = new SignalFuture();
+            QueueWorkItem(f, () => {
+                InternalSetFoundValue(index, existingOffset, existingLength, value);
+                f.Complete();
             });
             return f;
         }
 
         /// <summary>
-        /// Stores a value into the tangle, assigning it a given key.
+        /// Searches the tangle for a given key, and if it is found, returns a reference to the key that can be used to retrieve or replace its associated value.
+        /// </summary>
+        /// <returns>A future that will contain a reference to the key, if it was found.</returns>
+        /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
+        public Future<FindResult> Find (TangleKey key) {
+            var f = new Future<FindResult>();
+            QueueWorkItem(f, () => {
+                FindResult result;
+                if (InternalFind(key, out result))
+                    f.SetResult(result, null);
+                else
+                    f.SetResult(result, new KeyNotFoundException(key));
+            });
+            return f;
+        }
+
+        /// <summary>
+        /// Stores a value into the tangle, assigning it a given key. If the given key already has an associated value, that value is replaced.
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public IFuture Set (TangleKey key, T value) {
             var f = new SignalFuture();
             QueueWorkItem(f, () => {
-                InternalSet(key, value);
+                InternalSet(key, value, true);
                 f.Complete();
+            });
+            return f;
+        }
+
+        /// <summary>
+        /// Stores a value into the tangle, assigning it a given key. If the given key already has an associated value, the operation will abort.
+        /// </summary>
+        /// <returns>A future that completes once the value has been stored to disk. The future's value will be false if the operation was aborted.</returns>
+        public Future<bool> Add (TangleKey key, T value) {
+            var f = new Future<bool>();
+            QueueWorkItem(f, () => {
+                f.SetResult(InternalSet(key, value, false), null);
             });
             return f;
         }
@@ -451,13 +539,80 @@ For more information, see http://support.microsoft.com/kb/105763.";
             }
         }
 
-        private unsafe void InternalSet (TangleKey key, T value) {
-            const int writeModeNew = 0;
-            const int writeModeReplaceData = 1;
-            const int writeModeNewData = 2;
-            const int writeModeInsertNew = 3;
+        private unsafe void InternalSetFoundValue (long index, long existingOffset, uint existingLength, T value) {
+            if ((index < 0) || (index >= IndexCount))
+                throw new IndexOutOfRangeException();
 
-            int writeMode;
+            using (var ms = new MemoryStream()) {
+                Serializer(ref value, ms);
+
+                var segment = ms.GetSegment();
+                uint count = (uint)segment.Count;
+
+                long dataOffset = existingOffset;
+                WriteModes writeMode = (ms.Length > existingLength) ?
+                    WriteModes.AppendData : WriteModes.ReplaceData;
+
+                if (writeMode == WriteModes.AppendData)
+                    dataOffset = DataStream.AllocateSpace(count);
+
+                using (var range = AccessIndex(index)) {
+                    var pEntry = (IndexEntry*)range.Pointer;
+
+                    if ((pEntry->IsValid != 1) ||
+                        (pEntry->DataOffset != existingOffset) || 
+                        (pEntry->DataLength != existingLength))
+                        throw new InvalidDataException();
+
+                    pEntry->IsValid = 0;
+                    WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
+                    pEntry->IsValid = 1;
+                }
+            }
+        }
+
+        private unsafe void WriteKey (ref IndexEntry indexEntry, ref TangleKey key) {
+            using (var keyRange = KeyStream.AccessRange(indexEntry.KeyOffset, indexEntry.KeyLength, MemoryMappedFileAccess.Write))
+                WriteBytes(keyRange, 0, key.KeyData);
+        }
+
+        // IndexEntry must be fully prepared for the write operation:
+        //  KeyOffset/KeyLength must be filled in.
+        //  DataOffset/DataLength must be filled in.
+        //  The IndexEntry's IsValid must be 0.
+        // newOffset must specify the offset within the data stream where the data is to be written.
+        //  In most cases this should be equal to DataOffset, but in the case of AppendData it will be different.
+        private unsafe void WriteData (ref IndexEntry indexEntry, ref ArraySegment<byte> data, WriteModes writeMode, long dataOffset) {
+            if (indexEntry.IsValid != 0)
+                throw new InvalidDataException();
+
+            var count = (uint)data.Count;
+
+            if (writeMode == WriteModes.AppendData) {
+                using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write))
+                    ZeroBytes(range, 0, indexEntry.DataLength);
+            }
+            
+            indexEntry.DataOffset = (uint)dataOffset;
+            if (writeMode != WriteModes.ReplaceData)
+                indexEntry.DataLength = count;
+
+            using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write)) {
+                WriteBytes(range, 0, data);
+
+                if (writeMode == WriteModes.ReplaceData) {
+                    var bytesToZero = indexEntry.DataLength - count;
+                    if (bytesToZero > 0)
+                        ZeroBytes(range, count, bytesToZero);
+
+                    indexEntry.DataLength = count;
+                }
+            }
+
+        }
+
+        private unsafe bool InternalSet (TangleKey key, T value, bool allowOverwrite) {
+            WriteModes writeMode;
             IndexEntry indexEntry;
             long offset, dataOffset = 0, keyOffset = 0;
             long positionToClear = 0, emptyPosition = 0;
@@ -471,33 +626,40 @@ For more information, see http://support.microsoft.com/kb/105763.";
                     var newSpot = IndexStream.AllocateSpace(IndexEntry.Size);
 
                     if (index < count) {
-                        writeMode = writeModeInsertNew;
+                        writeMode = WriteModes.InsertIndex;
                         positionToClear = offset;
                         emptyPosition = newSpot;
                     } else {
-                        writeMode = writeModeNew;
+                        writeMode = WriteModes.AppendIndex;
                         offset = newSpot;
                     }
                 } else if (ms.Length > indexEntry.DataLength) {
+                    if (!allowOverwrite)
+                        return false;
+
                     offset = index * IndexEntry.Size;
-                    writeMode = writeModeNewData;
+                    writeMode = WriteModes.AppendData;
                 } else {
+                    if (!allowOverwrite)
+                        return false;
+
                     offset = index * IndexEntry.Size;
-                    writeMode = writeModeReplaceData;
+                    writeMode = WriteModes.ReplaceData;
                 }
 
-                if (writeMode == writeModeInsertNew || writeMode == writeModeNew)
+                if (writeMode == WriteModes.InsertIndex || writeMode == WriteModes.AppendIndex)
                     keyOffset = KeyStream.AllocateSpace((uint)key.KeyData.Count);
-                if (writeMode != writeModeReplaceData)
+
+                if (writeMode != WriteModes.ReplaceData)
                     dataOffset = DataStream.AllocateSpace((uint)ms.Length);
 
-                if (writeMode == writeModeInsertNew)
+                if (writeMode == WriteModes.InsertIndex)
                     MoveEntriesForward(positionToClear, emptyPosition);
 
                 using (var indexRange = IndexStream.AccessRange(offset, IndexEntry.Size, MemoryMappedFileAccess.ReadWrite)) {
                     var pEntry = (IndexEntry *)indexRange.Pointer;
 
-                    if (writeMode == writeModeNew || writeMode == writeModeInsertNew) {
+                    if (writeMode == WriteModes.AppendIndex || writeMode == WriteModes.InsertIndex) {
                         *pEntry = new IndexEntry {
                             DataOffset = (uint)dataOffset,
                             KeyOffset = (uint)keyOffset,
@@ -507,34 +669,13 @@ For more information, see http://support.microsoft.com/kb/105763.";
                             IsValid = 0
                         };
 
-                        using (var keyRange = KeyStream.AccessRange(pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Write))
-                            WriteBytes(keyRange, 0, key.KeyData);
-
+                        WriteKey(ref *pEntry, ref key);
                     } else {
                         pEntry->IsValid = 0;
                     }
 
                     var segment = ms.GetSegment();
-
-                    if (writeMode == writeModeInsertNew) {
-                        using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write))
-                            ZeroBytes(range, 0, pEntry->DataLength);
-                    }
-
-                    if (writeMode == writeModeNewData || writeMode == writeModeInsertNew) {
-                        pEntry->DataOffset = (uint)dataOffset;
-                        pEntry->DataLength = (uint)segment.Count;
-                    }
-
-                    using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength, MemoryMappedFileAccess.Write)) {
-                        WriteBytes(range, 0, segment);
-
-                        var bytesToZero = (uint)(pEntry->DataLength - segment.Count);
-                        if (bytesToZero > 0)
-                            ZeroBytes(range, segment.Count, (uint)bytesToZero);
-                    }
-
-                    pEntry->DataLength = (uint)segment.Count;
+                    WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
 
                     pEntry->IsValid = 1;
                 }
@@ -545,6 +686,8 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 foreach (var k in Keys)
                     Console.WriteLine(k.Value);
             }
+
+            return true;
         }
 
         private unsafe TangleKey GetKeyFromIndex (long index) {
@@ -572,6 +715,19 @@ For more information, see http://support.microsoft.com/kb/105763.";
             }
         }
 
+        private bool InternalFind (TangleKey key, out FindResult result) {
+            IndexEntry indexEntry;
+            long index;
+
+            if (!IndexEntryByKey(ref key, out indexEntry, out index)) {
+                result = default(FindResult);
+                return false;
+            }
+
+            result = new FindResult(this, ref key, index, indexEntry.DataOffset, indexEntry.DataLength);
+            return true;
+        }
+
         private bool InternalGet (TangleKey key, out T value) {
             IndexEntry indexEntry;
             long temp;
@@ -583,6 +739,16 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
             ReadValue(ref indexEntry, out value);
             return true;
+        }
+
+        private unsafe void InternalGetFoundValue (long index, long dataOffset, long dataLength, out T result) {
+            if ((index < 0) || (index >= IndexCount))
+                throw new IndexOutOfRangeException();
+
+            using (var range = AccessIndex(index)) {
+                var pEntry = (IndexEntry*)range.Pointer;
+                ReadValue(ref *pEntry, out result);
+            }
         }
 
         /// <summary>

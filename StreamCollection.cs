@@ -12,7 +12,7 @@ namespace Squared.Data.Mangler {
     }
 
     public abstract class CachingStreamSourceBase : StreamSource {
-        private readonly Dictionary<string, FileStream> Streams = new Dictionary<string, FileStream>();
+        protected readonly Dictionary<string, FileStream> Streams = new Dictionary<string, FileStream>();
 
         protected CachingStreamSourceBase () {
         }
@@ -74,9 +74,13 @@ namespace Squared.Data.Mangler {
             _Folder = folder;
         }
 
+        protected static string GetPath (string folder, string streamName) {
+            return Path.Combine(folder, streamName);
+        }
+
         protected override FileStream OpenStream (string streamName) {
-            var path = Path.Combine(Folder, streamName);
-            return File.Open(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            var path = GetPath(_Folder, streamName);
+            return File.Open(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Delete | FileShare.ReadWrite);
         }
 
         public string Folder {
@@ -87,8 +91,18 @@ namespace Squared.Data.Mangler {
                 if (value == _Folder)
                     return;
 
-                Directory.Move(_Folder, value);
+                var oldFolder = _Folder;
+
+                Directory.CreateDirectory(value);
+                foreach (var kvp in Streams) {
+                    var oldPath = GetPath(oldFolder, kvp.Key);
+                    var newPath = GetPath(value, kvp.Key);
+                    File.Move(oldPath, newPath);
+                }
+
                 _Folder = value;
+
+                Directory.Delete(oldFolder, true);
             }
         }
     }

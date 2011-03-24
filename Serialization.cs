@@ -23,6 +23,25 @@ namespace Squared.Data.Mangler.Serialization {
     /// </summary>
     public delegate void Deserializer<T> (Stream input, out T output);
 
+    public class StringSerializer {
+        public readonly Encoding Encoding;
+
+        public StringSerializer (Encoding encoding = null) {
+            Encoding = encoding ?? Encoding.UTF8;
+        }
+
+        public void Serialize (ref string input, Stream output) {
+            var bytes = Encoding.GetBytes(input);
+            output.Write(bytes, 0, bytes.Length);
+        }
+
+        public void Deserialize (Stream input, out string output) {
+            var bytes = new byte[input.Length];
+            input.Read(bytes, 0, bytes.Length);
+            output = Encoding.GetString(bytes);
+        }
+    }
+
     public static class Defaults<T> {
         public static Serializer<T> Serializer = SerializeToXml;
         public static Deserializer<T> Deserializer = DeserializeFromXml;
@@ -38,11 +57,11 @@ namespace Squared.Data.Mangler.Serialization {
             )) {
                 var sa = method.GetCustomAttributes(tsa, true);
                 if (sa.Length == 1)
-                    Serializer = (Delegate.CreateDelegate(typeof(Serializer<T>), method) as Serializer<T>) ?? Serializer;
+                    Serializer = (Serializer<T>)(Delegate.CreateDelegate(typeof(Serializer<T>), method, true)) ?? Serializer;
 
                 sa = method.GetCustomAttributes(tda, true);
                 if (sa.Length == 1)
-                    Deserializer = (Delegate.CreateDelegate(typeof(Deserializer<T>), method) as Deserializer<T>) ?? Deserializer;
+                    Deserializer = (Deserializer<T>)(Delegate.CreateDelegate(typeof(Deserializer<T>), method, true)) ?? Deserializer;
             }
         }
 
