@@ -17,23 +17,20 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 */
 
 using System;
-using System.Collections.Concurrent;
 using System.IO.MemoryMappedFiles;
 using System.Threading;
 using System.Runtime.InteropServices;
 using System.IO;
 using Microsoft.Win32.SafeHandles;
 using System.Collections.Generic;
-using Squared.Util;
 using System.Security;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     internal unsafe struct StreamHeader {
-        [MarshalAs(UnmanagedType.I4)]
         public uint FormatVersion;
-        [MarshalAs(UnmanagedType.I8)]
         public long DataLength;
+        public long RootIndex;
     }
 
     internal unsafe struct StreamHeaderRef : IDisposable {
@@ -355,6 +352,18 @@ namespace Squared.Data.Mangler.Internal {
                 using (var header = AccessHeader())
                     header.Ptr->FormatVersion = value;
             }
+        }
+
+        public unsafe long RootIndex {
+            get {
+                using (var header = AccessHeader())
+                    return header.Ptr->RootIndex;
+            }
+        }
+
+        public unsafe bool MoveRoot (long oldIndex, long newIndex) {
+            using (var header = AccessHeader())
+                return Interlocked.CompareExchange(ref header.Ptr->RootIndex, newIndex, oldIndex) == oldIndex;
         }
 
         public unsafe long Length {

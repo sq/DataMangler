@@ -25,16 +25,40 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Squared.Data.Mangler.Internal;
-using System.Xml.Serialization;
 using System.IO.MemoryMappedFiles;
-using Squared.Util;
 using System.Collections.Concurrent;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 4)]
-    internal unsafe struct BTreeNodeHeader {
-        public byte IsValid, NumValues;
-        public const int MaxIndexEntries = 4;
+    internal unsafe struct BTreeNode {
+        public static readonly uint Size;
+        public static readonly uint TotalSize;
+        public static readonly uint OffsetOfValues;
+        public static readonly uint OffsetOfLeaves;
+
+        public const int MaxValues = 8;
+        public const int MaxLeaves = MaxValues + 1;
+
+        static BTreeNode () {
+            Size = (uint)Marshal.SizeOf(typeof(BTreeNode));
+            TotalSize = Size + (MaxValues * IndexEntry.Size) + (MaxLeaves * BTreeLeaf.Size);
+            OffsetOfValues = Size;
+            OffsetOfLeaves = OffsetOfValues + (MaxValues * IndexEntry.Size);
+        }
+
+        public byte IsValid, HasLeaves;
+        public ushort NumValues;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 4)]
+    internal unsafe struct BTreeLeaf {
+        public static readonly uint Size;
+
+        static BTreeLeaf () {
+            Size = (uint)Marshal.SizeOf(typeof(BTreeLeaf));
+        }
+
+        public uint NodeIndex;
     }
 
     [StructLayout(LayoutKind.Explicit, Size = 16)]
@@ -207,33 +231,30 @@ namespace Squared.Data.Mangler {
     public unsafe class Tangle<T> : IDisposable {
         enum WriteModes {
             Invalid,
-            AppendIndex, // Append new index entry, write new key and data
-            InsertIndex, // Insert new index entry, write new key and data
-            ReplaceData, // Write data over existing data, update index
-            AppendData,   // Append new data, erase existing data, update index
+            AppendDataAndKey, // Append new data and new key
+            ReplaceData,      // Write new data over existing data
+            AppendData,       // Append new data, erase existing data
         }
-
 
         public struct FindResult {
             public readonly Tangle<T> Tangle;
             public readonly TangleKey Key;
-            private readonly long Index, DataOffset;
-            private readonly uint DataLength;
+            private readonly long NodeIndex;
+            private readonly uint ValueIndex;
 
-            internal FindResult (Tangle<T> owner, ref TangleKey key, long index, long dataOffset, uint dataLength) {
+            internal FindResult (Tangle<T> owner, ref TangleKey key, long nodeIndex, uint valueIndex) {
                 Tangle = owner;
                 Key = key;
-                Index = index;
-                DataOffset = dataOffset;
-                DataLength = dataLength;
+                NodeIndex = nodeIndex;
+                ValueIndex = valueIndex;
             }
 
             public Future<T> GetValue () {
-                return Tangle.GetValueByIndex(Index, DataOffset, DataLength);
+                return Tangle.GetValueByIndex(NodeIndex, ValueIndex);
             }
 
             public IFuture SetValue (T newValue) {
-                return Tangle.SetValueByIndex(Index, DataOffset, DataLength, ref newValue);
+                return Tangle.SetValueByIndex(NodeIndex, ValueIndex, ref newValue);
             }
         }
 
@@ -367,20 +388,18 @@ namespace Squared.Data.Mangler {
 
         private class GetByIndexThunk : IWorkItem<T> {
             public readonly Future<T> Future = new Future<T>();
-            public readonly long Index;
-            public readonly long DataOffset;
-            public readonly uint DataLength;
+            public readonly long NodeIndex;
+            public readonly uint ValueIndex;
 
-            public GetByIndexThunk (long index, long dataOffset, uint dataLength) {
-                Index = index;
-                DataOffset = dataOffset;
-                DataLength = dataLength;
+            public GetByIndexThunk (long nodeIndex, uint valueIndex) {
+                NodeIndex = nodeIndex;
+                ValueIndex = valueIndex;
             }
 
             public void Execute (Tangle<T> tangle) {
                 try {
                     T result;
-                    tangle.InternalGetFoundValue(Index, DataOffset, DataLength, out result);
+                    tangle.InternalGetFoundValue(NodeIndex, ValueIndex, out result);
                     Future.SetResult(result, null);
                 } catch (Exception ex) {
                     Future.SetResult(default(T), ex);
@@ -390,21 +409,19 @@ namespace Squared.Data.Mangler {
 
         private class SetByIndexThunk : IWorkItem<T> {
             public readonly SignalFuture Future = new SignalFuture();
-            public readonly long Index;
-            public readonly long DataOffset;
-            public readonly uint DataLength;
+            public readonly long NodeIndex;
+            public readonly uint ValueIndex;
             public T Value;
 
-            public SetByIndexThunk (long index, long dataOffset, uint dataLength, ref T value) {
-                Index = index;
-                DataOffset = dataOffset;
-                DataLength = dataLength;
+            public SetByIndexThunk (long nodeIndex, uint valueIndex, ref T value) {
+                NodeIndex = nodeIndex;
+                ValueIndex = valueIndex;
                 Value = value;
             }
 
             public void Execute (Tangle<T> tangle) {
                 try {
-                    tangle.InternalSetFoundValue(Index, DataOffset, DataLength, ref Value);
+                    tangle.InternalSetFoundValue(NodeIndex, ValueIndex, ref Value);
                     Future.Complete();
                 } catch (Exception ex) {
                     Future.Fail(ex);
@@ -414,7 +431,7 @@ namespace Squared.Data.Mangler {
 
 
         public const bool TraceKeyInsertions = false;
-        public const uint CurrentFormatVersion = 1;
+        public const uint CurrentFormatVersion = 2;
         public const int MaxSerializationBufferSize = 1024 * 64;
 
         public static readonly int WorkerThreadTimeoutMs = 30000;
@@ -518,14 +535,14 @@ namespace Squared.Data.Mangler {
             return thunk.Future;
         }
 
-        protected Future<T> GetValueByIndex (long index, long dataOffset, uint dataLength) {
-            var thunk = new GetByIndexThunk(index, dataOffset, dataLength);
+        protected Future<T> GetValueByIndex (long nodeIndex, uint valueIndex) {
+            var thunk = new GetByIndexThunk(nodeIndex, valueIndex);
             QueueWorkItem(thunk);
             return thunk.Future;
         }
 
-        protected IFuture SetValueByIndex (long index, long dataOffset, uint dataLength, ref T value) {
-            var thunk = new SetByIndexThunk(index, dataOffset, dataLength, ref value);
+        protected IFuture SetValueByIndex (long nodeIndex, uint valueIndex, ref T value) {
+            var thunk = new SetByIndexThunk(nodeIndex, valueIndex, ref value);
             QueueWorkItem(thunk);
             return thunk.Future;
         }
@@ -625,71 +642,93 @@ namespace Squared.Data.Mangler {
         }
          */
 
-        private StreamRange AccessIndex (long index, MemoryMappedFileAccess access) {
-            long count = (IndexStream.Length / IndexEntry.Size);
+        private StreamRange AccessBTreeNode (long index, MemoryMappedFileAccess access) {
+            long count = BTreeNodeCount;
 
             if ((index < 0) || (index >= count))
                 throw new ArgumentException(String.Format(
                     "Expected 0 <= index < {0}, but index was {1}", count, index
                 ), "index");
 
-            long position = index * IndexEntry.Size;
+            long position = index * BTreeNode.TotalSize;
+            return IndexStream.AccessRange(position, BTreeNode.TotalSize, access);
+        }
+
+        private StreamRange AccessBTreeValue (long nodeIndex, uint valueIndex, MemoryMappedFileAccess access) {
+            long count = BTreeNodeCount;
+
+            if ((nodeIndex < 0) || (nodeIndex >= count))
+                throw new ArgumentException(String.Format(
+                    "Expected 0 <= index < {0}, but index was {1}", count, nodeIndex
+                ), "index");
+
+            long position = (nodeIndex * BTreeNode.TotalSize) + BTreeNode.OffsetOfValues + (valueIndex * IndexEntry.Size);
             return IndexStream.AccessRange(position, IndexEntry.Size, access);
         }
 
-        private unsafe bool IndexEntryByKey (long firstIndex, long indexCount, ref TangleKey rhs, out IndexEntry resultEntry, out long resultIndex) {
-            uint lengthRhs = (uint)rhs.Data.Count;
-            long min = firstIndex, max = firstIndex + indexCount - 1;
-            long pivot;
-            int delta = 0;
+        /// <summary>
+        /// Performs a binary search of the values stored within a BTree node.
+        /// </summary>
+        /// <param name="entries">Pointer to the first value within the node.</param>
+        /// <param name="entryCount">The number of values within the node.</param>
+        /// <param name="pKey">Pointer to the first byte of the key to search for.</param>
+        /// <param name="keyLength">The number of bytes in the key to search for.</param>
+        /// <param name="resultIndex">The index of the leaf that lies between the provided key's neighbors, or the index of the value within the node that matches the provided key.</param>
+        /// <returns>True if one of the node's values matches the provided key. False if the provided key was not found.</returns>
+        private unsafe bool SearchValues (IndexEntry * entries, ushort entryCount, byte * pKey, uint keyLength, out uint resultIndex) {
+            throw new NotImplementedException();
+        }
 
-            fixed (byte * pRhs = &rhs.Data.Array[rhs.Data.Offset])
-            while (min <= max) {
+        /// <summary>
+        /// Searches the BTree for a provided key.
+        /// </summary>
+        /// <param name="key">The key to search for.</param>
+        /// <param name="nodeIndex">Contains the index of the BTree node where the search ended.</param>
+        /// <param name="valueIndex">Contains the index of the value within the node that matched the key, if a match was found. If no match was found, contains the index of the node's leaf that would contain the key if it existed in the tree.</param>
+        /// <returns>True if the key was found within the tree. False if the key was not found.</returns>
+        private unsafe bool FindKey (ref TangleKey key, out long nodeIndex, out uint valueIndex) {
+            uint keyLength = (uint)key.Data.Count;
 
-                pivot = min + ((max - min) >> 1);
+            long nodeCount = BTreeNodeCount;
+            long currentNode = IndexStream.RootIndex;
 
-                using (var indexRange = AccessIndex(pivot, MemoryMappedFileAccess.Read)) {
-                    var pEntry = (IndexEntry *)indexRange.Pointer;
-                    if (pEntry->KeyType == 0)
-                        throw new InvalidDataException();
+            fixed (byte * pKey = &key.Data.Array[key.Data.Offset])
+            while (currentNode >= 0 && currentNode < nodeCount)
+            using (var range = AccessBTreeNode(currentNode, MemoryMappedFileAccess.Read)) {
+                var pNode = (BTreeNode *)range.Pointer;
+                if (pNode->IsValid == 0)
+                    throw new InvalidDataException();
 
-                    using (var keyRange = KeyStream.AccessRange(
-                        pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
-                    )) {
-                        var pLhs = keyRange.Pointer;
+                var pValues = (IndexEntry*)(range.Pointer + BTreeNode.OffsetOfValues);
+                if (SearchValues(pValues, pNode->NumValues, pKey, keyLength, out valueIndex)) {
+                    // Found an exact match within the BTree node.
+                    nodeIndex = currentNode;
+                    return true;
+                }
 
-                        var compareLength = Math.Min(pEntry->KeyLength, lengthRhs);
-                        delta = Native.memcmp(pLhs, pRhs, new UIntPtr(compareLength));
-                        if (delta == 0) {
-                            if (pEntry->KeyLength > compareLength)
-                                delta = 1;
-                            else if (lengthRhs > compareLength)
-                                delta = -1;
-                        }
-                    }
-
-                    if (delta == 0) {
-                        resultEntry = *pEntry;
-                        resultIndex = pivot;
-
-                        return true;
-                    } else if (delta < 0) {
-                        min = pivot + 1;
-                    } else {
-                        max = pivot - 1;
-                    }
+                if (pNode->HasLeaves == 1) {
+                    // No exact match was found, so valueIndex now contains the index of the leaf node.
+                    var pLeaves = (BTreeLeaf *)(range.Pointer + BTreeNode.OffsetOfLeaves);
+                    currentNode = pLeaves[valueIndex].NodeIndex;
+                } else {                    
+                    // The value was not found inside the node, and we're in a node with no leaves, so there is no match.
+                    nodeIndex = currentNode;
+                    return false;
                 }
             }
 
-            resultEntry = default(IndexEntry);
-            resultIndex = min;
+            throw new InvalidDataException("Current node left the index");
+        }
 
-            return false;
+        private long BTreeNodeCount {
+            get {
+                return (IndexStream.Length / BTreeNode.TotalSize);
+            }
         }
 
         public long Count {
             get {
-                return (IndexStream.Length / IndexEntry.Size);
+                throw new NotImplementedException();
             }
         }
 
@@ -699,8 +738,11 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private bool IndexEntryByKey (ref TangleKey key, out IndexEntry resultEntry, out long resultIndex) {
-            return IndexEntryByKey(0, Count, ref key, out resultEntry, out resultIndex);
+        private void ReadIndexEntry (long nodeIndex, uint valueIndex, out IndexEntry result) {
+            using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
+                var pEntry = (IndexEntry *)range.Pointer;
+                result = *pEntry;
+            }
         }
 
         private void ReadData (ref IndexEntry entry, out T value) {
@@ -727,65 +769,28 @@ namespace Squared.Data.Mangler {
                 ptr[i + offset] = 0;
         }
 
-        private unsafe void MoveEntriesForward (long positionToClear, long emptyPosition) {
-            long size = emptyPosition - positionToClear + IndexEntry.Size;
-            long position = size - (IndexEntry.Size * 2);
+        private unsafe void InternalSetFoundValue (long nodeIndex, uint valueIndex, ref T value) {
+            using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Write)) {
+                var pEntry = (IndexEntry *)range.Pointer;
 
-            using (var range = IndexStream.AccessRange(
-                positionToClear, (uint)size,
-                MemoryMappedFileAccess.ReadWrite
-            )) {
-                Native.memmove(range.Pointer + IndexEntry.Size, range.Pointer, new UIntPtr((ulong)(size - IndexEntry.Size)));
-                /*
-                var ptr = range.Pointer;
+                var segment = Serialize(ref value);
+                uint count = (uint)segment.Count;
 
-                while (position >= 0) {
-                    IndexEntry* pSource = (IndexEntry *)(ptr + position);
-                    IndexEntry* pDest = (IndexEntry*)(ptr + position + IndexEntry.Size);
+                long dataOffset = pEntry->DataOffset;
+                WriteModes writeMode = (segment.Count > pEntry->DataLength) ?
+                    WriteModes.AppendData : WriteModes.ReplaceData;
 
-                    var kt = pSource->KeyType;
-                    if (kt == 0)
-                        throw new InvalidDataException();
+                if (writeMode == WriteModes.AppendData)
+                    dataOffset = DataStream.AllocateSpace(count);
 
-                    pSource->KeyType = 0;
+                var keyType = pEntry->KeyType;
 
-                    *pDest = *pSource;
-
-                    pDest->KeyType = kt;
-
-                    position -= IndexEntry.Size;
-                }
-                 */
-            }
-        }
-
-        private unsafe void InternalSetFoundValue (long index, long existingOffset, uint existingLength, ref T value) {
-            if ((index < 0) || (index >= Count))
-                throw new IndexOutOfRangeException();
-
-            var segment = Serialize(ref value);
-            uint count = (uint)segment.Count;
-
-            long dataOffset = existingOffset;
-            WriteModes writeMode = (segment.Count > existingLength) ?
-                WriteModes.AppendData : WriteModes.ReplaceData;
-
-            if (writeMode == WriteModes.AppendData)
-                dataOffset = DataStream.AllocateSpace(count);
-
-            using (var range = AccessIndex(index, MemoryMappedFileAccess.Write)) {
-                var pEntry = (IndexEntry*)range.Pointer;
-
-                var kt = pEntry->KeyType;
-
-                if ((kt == 0) ||
-                    (pEntry->DataOffset != existingOffset) || 
-                    (pEntry->DataLength != existingLength))
+                if (keyType == 0)
                     throw new InvalidDataException();
 
                 pEntry->KeyType = 0;
                 WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
-                pEntry->KeyType = kt;
+                pEntry->KeyType = keyType;
             }
         }
 
@@ -838,57 +843,49 @@ namespace Squared.Data.Mangler {
 
         private unsafe bool InternalSet (TangleKey key, ref T value, IReplaceCallback replacementCallback) {
             WriteModes writeMode = WriteModes.Invalid;
-            IndexEntry indexEntry;
-            long offset = 0, keyOffset = 0;
-            long? dataOffset = null;
-            long positionToClear = 0, emptyPosition = 0;
-            long index, count = Count;
 
-            bool foundExisting = IndexEntryByKey(0, count, ref key, out indexEntry, out index);
-            offset = index * IndexEntry.Size;
+            long keyOffset = 0;
+            long? dataOffset = null;
+
+            long nodeIndex;
+            uint valueIndex;
+
+            bool foundExisting = FindKey(ref key, out nodeIndex, out valueIndex);
 
             if (!foundExisting) {
-                var newSpot = IndexStream.AllocateSpace(IndexEntry.Size);
+                // BTree insert
+                throw new NotImplementedException();
+            }
 
-                if (index < count) {
-                    writeMode = WriteModes.InsertIndex;
-                    positionToClear = offset;
-                    emptyPosition = newSpot;
-                } else {
-                    writeMode = WriteModes.AppendIndex;
-                    offset = newSpot;
+            using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.ReadWrite)) {
+                var pEntry = (IndexEntry*)range.Pointer;
+
+                if (foundExisting) {
+                    bool shouldContinue = replacementCallback.ShouldReplace(this, ref *pEntry, ref value);
+                    if (!shouldContinue)
+                        return false;
+
+                    if (pEntry->KeyType != key.OriginalTypeId)
+                        throw new InvalidDataException();
+                    pEntry->KeyType = 0;
                 }
-            } else {
-                bool shouldContinue = replacementCallback.ShouldReplace(this, ref indexEntry, ref value);
-                if (!shouldContinue)
-                    return false;
-            }
 
-            var segment = Serialize(ref value);
+                var segment = Serialize(ref value);
 
-            if (foundExisting) {
-                if (segment.Count > indexEntry.DataLength)
-                    writeMode = WriteModes.AppendData;
-                else
-                    writeMode = WriteModes.ReplaceData;
-            }
+                if (foundExisting) {
+                    if (segment.Count > pEntry->DataLength)
+                        writeMode = WriteModes.AppendData;
+                    else
+                        writeMode = WriteModes.ReplaceData;
+                } else {
+                    writeMode = WriteModes.AppendDataAndKey;
+                    keyOffset = KeyStream.AllocateSpace((uint)key.Data.Count);
+                }
 
-            if (writeMode == WriteModes.Invalid)
-                throw new InvalidDataException();
+                if (writeMode != WriteModes.ReplaceData)
+                    dataOffset = DataStream.AllocateSpace((uint)segment.Count);
 
-            if (writeMode == WriteModes.InsertIndex || writeMode == WriteModes.AppendIndex)
-                keyOffset = KeyStream.AllocateSpace((uint)key.Data.Count);
-
-            if (writeMode != WriteModes.ReplaceData)
-                dataOffset = DataStream.AllocateSpace((uint)segment.Count);
-
-            if (writeMode == WriteModes.InsertIndex)
-                MoveEntriesForward(positionToClear, emptyPosition);
-
-            using (var indexRange = IndexStream.AccessRange(offset, IndexEntry.Size, MemoryMappedFileAccess.ReadWrite)) {
-                var pEntry = (IndexEntry *)indexRange.Pointer;
-
-                if (writeMode == WriteModes.AppendIndex || writeMode == WriteModes.InsertIndex) {
+                if (writeMode == WriteModes.AppendDataAndKey) {
                     *pEntry = new IndexEntry {
                         DataOffset = (uint)dataOffset.Value,
                         KeyOffset = (uint)keyOffset,
@@ -898,8 +895,6 @@ namespace Squared.Data.Mangler {
                     };
 
                     WriteKey(ref *pEntry, ref key);
-                } else {
-                    pEntry->KeyType = 0;
                 }
 
                 WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
@@ -907,15 +902,10 @@ namespace Squared.Data.Mangler {
                 pEntry->KeyType = key.OriginalTypeId;
             }
 
-            if (TraceKeyInsertions) {
-                Console.WriteLine("--------");
-                foreach (var k in Keys)
-                    Console.WriteLine(k.Value);
-            }
-
             return true;
         }
 
+        /*
         private unsafe TangleKey GetKeyFromIndex (long index) {
             using (var indexRange = AccessIndex(index, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry *)indexRange.Pointer;
@@ -932,46 +922,51 @@ namespace Squared.Data.Mangler {
                 }
             }
         }
+         */
 
         public IEnumerable<TangleKey> Keys {
             get {
-                long count = IndexStream.Length / IndexEntry.Size;
+                throw new NotImplementedException();
+
+                /*
+                long count = BTreeNodeCount;
                 for (long i = 0; i < count; i++)
-                    yield return GetKeyFromIndex(i);
+                using (var range = AccessBTreeNode(i, MemoryMappedFileAccess.Read))
+                    // Depth-first search, I think?    
+                */
             }
         }
 
         private bool InternalFind (TangleKey key, out FindResult result) {
-            IndexEntry indexEntry;
-            long index;
+            long nodeIndex;
+            uint valueIndex;
 
-            if (!IndexEntryByKey(ref key, out indexEntry, out index)) {
+            if (!FindKey(ref key, out nodeIndex, out valueIndex)) {
                 result = default(FindResult);
                 return false;
             }
 
-            result = new FindResult(this, ref key, index, indexEntry.DataOffset, indexEntry.DataLength);
+            result = new FindResult(this, ref key, nodeIndex, valueIndex);
             return true;
         }
 
         private bool InternalGet (TangleKey key, out T value) {
-            IndexEntry indexEntry;
-            long temp;
+            long nodeIndex;
+            uint valueIndex;
 
-            if (!IndexEntryByKey(ref key, out indexEntry, out temp)) {
+            if (!FindKey(ref key, out nodeIndex, out valueIndex)) {
                 value = default(T);
                 return false;
             }
 
+            IndexEntry indexEntry;
+            ReadIndexEntry(nodeIndex, valueIndex, out indexEntry);
             ReadData(ref indexEntry, out value);
             return true;
         }
 
-        private unsafe void InternalGetFoundValue (long index, long dataOffset, long dataLength, out T result) {
-            if ((index < 0) || (index >= Count))
-                throw new IndexOutOfRangeException();
-
-            using (var range = AccessIndex(index, MemoryMappedFileAccess.Read)) {
+        private unsafe void InternalGetFoundValue (long nodeIndex, uint valueIndex, out T result) {
+            using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry*)range.Pointer;
                 ReadData(ref *pEntry, out result);
             }
