@@ -756,7 +756,7 @@ namespace Squared.Data.Mangler {
 
                         using (var newRootRange = AccessBTreeNode(newRootIndex, MemoryMappedFileAccess.ReadWrite)) {
                             var pNewRoot = (BTreeNode *)newRootRange.Pointer;
-                            var pNewLeaves = (BTreeLeaf *)newRootRange.Pointer + BTreeNode.OffsetOfLeaves;
+                            var pNewLeaves = (BTreeLeaf *)(newRootRange.Pointer + BTreeNode.OffsetOfLeaves);
                             
                             // This looks wrong, but it's not: We want the new root to contain 0 values,
                             //  but have one leaf pointing to the old root, so that we can split the old
@@ -769,6 +769,7 @@ namespace Squared.Data.Mangler {
 
                         BTreeSplitLeafNode(newRootIndex, 0, currentNode);
                     } else {
+                        // Splitting a regular node.
                         throw new NotImplementedException();
                     }
                 }
@@ -799,8 +800,8 @@ namespace Squared.Data.Mangler {
         private unsafe void BTreePrepareForInsert (long nodeIndex, uint valueIndex) {
             using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
                 var pNode = (BTreeNode *)range.Pointer;
-                var pValues = (IndexEntry*)range.Pointer + BTreeNode.OffsetOfValues;
-                var pLeaves = (BTreeLeaf*)range.Pointer + BTreeNode.OffsetOfLeaves;
+                var pValues = (IndexEntry *)(range.Pointer + BTreeNode.OffsetOfValues);
+                var pLeaves = (BTreeLeaf *)(range.Pointer + BTreeNode.OffsetOfLeaves);
 
                 if (pNode->IsValid == 0)
                     throw new InvalidDataException();
@@ -809,16 +810,27 @@ namespace Squared.Data.Mangler {
 
                 pNode->IsValid = 0;
 
-                if (valueIndex < pNode->NumValues)
+                if (valueIndex < pNode->NumValues) {
                     // Move values
+                    /*
+                    for (var j = pNode->NumValues; j > valueIndex; j--)
+                        pValues[j] = pValues[j - 1];
+                     */
+
                     Native.memmove(
                         (byte*)(&pValues[valueIndex + 1]),
                         (byte*)(&pValues[valueIndex]),
                         new UIntPtr((pNode->NumValues - valueIndex) * IndexEntry.Size)
                     );
+                }
 
-                if (pNode->HasLeaves != 0) {
+                if (pNode->HasLeaves == 1) {
                     // Move leaves
+                    /*
+                    for (var j = (pNode->NumValues + 1); j > (valueIndex + 1); j--)
+                        pLeaves[j] = pLeaves[j - 1];
+                     */
+
                     Native.memmove(
                         (byte*)(&pLeaves[valueIndex + 1]),
                         (byte*)(&pLeaves[valueIndex]),
@@ -835,8 +847,8 @@ namespace Squared.Data.Mangler {
 
             using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
                 var pNode = (BTreeNode *)range.Pointer;
-                var pValues = (IndexEntry*)range.Pointer + BTreeNode.OffsetOfValues;
-                var pLeaves = (BTreeLeaf*)range.Pointer + BTreeNode.OffsetOfLeaves;
+                var pValues = (IndexEntry *)(range.Pointer + BTreeNode.OffsetOfValues);
+                var pLeaves = (BTreeLeaf *)(range.Pointer + BTreeNode.OffsetOfLeaves);
 
                 if (pNode->IsValid != 0)
                     throw new InvalidDataException();
@@ -855,12 +867,12 @@ namespace Squared.Data.Mangler {
             using (var leafRange = AccessBTreeNode(leafNodeIndex, MemoryMappedFileAccess.ReadWrite))
             using (var newRange = AccessBTreeNode(newIndex, MemoryMappedFileAccess.Write)) {
                 var pLeaf = (BTreeNode *)leafRange.Pointer;
-                var pLeafValues = (IndexEntry *)leafRange.Pointer + BTreeNode.OffsetOfValues;
-                var pLeafLeaves = (BTreeLeaf *)leafRange.Pointer + BTreeNode.OffsetOfLeaves;
+                var pLeafValues = (IndexEntry *)(leafRange.Pointer + BTreeNode.OffsetOfValues);
+                var pLeafLeaves = (BTreeLeaf *)(leafRange.Pointer + BTreeNode.OffsetOfLeaves);
 
                 var pNew = (BTreeNode *)newRange.Pointer;
-                var pNewValues = (IndexEntry *)newRange.Pointer + BTreeNode.OffsetOfValues;
-                var pNewLeaves = (BTreeLeaf *)newRange.Pointer + BTreeNode.OffsetOfLeaves;
+                var pNewValues = (IndexEntry *)(newRange.Pointer + BTreeNode.OffsetOfValues);
+                var pNewLeaves = (BTreeLeaf *)(newRange.Pointer + BTreeNode.OffsetOfLeaves);
 
                 if (pLeaf->IsValid != 1)
                     throw new InvalidDataException();
@@ -1143,6 +1155,8 @@ namespace Squared.Data.Mangler {
                     };
 
                     WriteKey(ref *pEntry, ref key);
+                } else {
+                    int i = 0;
                 }
 
                 WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
