@@ -247,8 +247,9 @@ All the actual data is stored in NTFS streams attached to this file.
 For more information, see http://support.microsoft.com/kb/105763.";
 
         public const bool TraceKeyInsertions = false;
-
         public const uint CurrentFormatVersion = 1;
+
+        public static readonly int WorkerThreadTimeoutMs = 10000;
 
         public readonly bool OwnsStorage;
         public readonly StreamSource Storage;
@@ -447,7 +448,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
         private void QueueWorkItem (IFuture future, Action action) {
             if (_WorkerThread == null)
-                _WorkerThread = new Squared.Task.Internal.WorkerThread<ConcurrentQueue<WorkItem>>(WorkerThreadFunc, ThreadPriority.Normal);
+                _WorkerThread = new Squared.Task.Internal.WorkerThread<ConcurrentQueue<WorkItem>>(
+                    WorkerThreadFunc, ThreadPriority.Normal, String.Format("Tangle<{0}> Worker", typeof(T).ToString())
+                );
 
             _WorkerThread.WorkItems.Enqueue(new WorkItem {
                 Future = future,
@@ -468,7 +471,9 @@ For more information, see http://support.microsoft.com/kb/105763.";
                     }
                 }
 
-                newWorkItemEvent.WaitOne();
+                if (!newWorkItemEvent.WaitOne(WorkerThreadTimeoutMs))
+                    return;
+
                 newWorkItemEvent.Reset();
             }
         }
