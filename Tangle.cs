@@ -474,6 +474,9 @@ namespace Squared.Data.Mangler {
             VersionCheck(IndexStream);
             VersionCheck(KeyStream);
             VersionCheck(DataStream);
+
+            if (BTreeNodeCount == 0)
+                CreateBTreeRoot();
         }
 
         private ArraySegment<byte> Serialize (ref T value) {
@@ -671,12 +674,48 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <param name="entries">Pointer to the first value within the node.</param>
         /// <param name="entryCount">The number of values within the node.</param>
-        /// <param name="pKey">Pointer to the first byte of the key to search for.</param>
-        /// <param name="keyLength">The number of bytes in the key to search for.</param>
-        /// <param name="resultIndex">The index of the leaf that lies between the provided key's neighbors, or the index of the value within the node that matches the provided key.</param>
+        /// <param name="pSearchKey">Pointer to the first byte of the key to search for.</param>
+        /// <param name="searchKeyLength">The number of bytes in the key to search for.</param>
+        /// <param name="resultIndex">The index of the value within the node that matches the provided key, if any, otherwise the index of the leaf that should contain the provided key.</param>
         /// <returns>True if one of the node's values matches the provided key. False if the provided key was not found.</returns>
-        private unsafe bool SearchValues (IndexEntry * entries, ushort entryCount, byte * pKey, uint keyLength, out uint resultIndex) {
-            throw new NotImplementedException();
+        private unsafe bool SearchValues (IndexEntry * entries, ushort entryCount, byte * pSearchKey, uint searchKeyLength, out uint resultIndex) {
+            int min = 0, max = entryCount - 1;
+            int delta = 0, pivot;
+
+            while (min <= max) {
+                pivot = min + ((max - min) >> 1);
+
+                var pEntry = &entries[pivot];
+                if (pEntry->KeyType == 0)
+                    throw new InvalidDataException();
+
+                using (var keyRange = KeyStream.AccessRange(
+                    pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
+                )) {
+                    var pLhs = keyRange.Pointer;
+
+                    var compareLength = Math.Min(pEntry->KeyLength, searchKeyLength);
+                    delta = Native.memcmp(pLhs, pSearchKey, new UIntPtr(compareLength));
+                    if (delta == 0) {
+                        if (pEntry->KeyLength > compareLength)
+                            delta = 1;
+                        else if (searchKeyLength > compareLength)
+                            delta = -1;
+                    }
+                }
+
+                if (delta == 0) {
+                    resultIndex = (uint)pivot;
+                    return true;
+                } else if (delta < 0) {
+                    min = pivot + 1;
+                } else {
+                    max = pivot - 1;
+                }
+            }
+
+            resultIndex = (uint)min;
+            return false;
         }
 
         /// <summary>
@@ -718,6 +757,37 @@ namespace Squared.Data.Mangler {
             }
 
             throw new InvalidDataException("Current node left the index");
+        }
+
+        /// <summary>
+        /// Prepares the BTree for the insertion of a new value at a given location.
+        /// If the tree has to be modified in order to make room for the insert operation, 
+        ///  this function will update the <paramref name="nodeIndex"/> and <paramref name="leafIndex"/> parameters to point at the new insertion location.
+        /// </summary>
+        /// <param name="nodeIndex">The index of the BTree node that contains the insert location.</param>
+        /// <param name="leafIndex">The leaf location where the insert should occur.</param>
+        private unsafe void BTreeInsert (ref long nodeIndex, ref uint leafIndex) {
+            using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
+                throw new NotImplementedException();
+            }
+        }
+
+        private unsafe void CreateBTreeRoot () {
+            var oldIndex = IndexStream.RootIndex;
+            long offset = IndexStream.AllocateSpace(BTreeNode.TotalSize);
+            var newIndex = offset / BTreeNode.TotalSize;
+
+            using (var range = IndexStream.AccessRange(offset, BTreeNode.TotalSize, MemoryMappedFileAccess.Write)) {
+                var pNode = (BTreeNode *)range.Pointer;
+                *pNode = new BTreeNode {
+                    HasLeaves = 0,
+                    IsValid = 1,
+                    NumValues = 0
+                };
+            }
+
+            if (!IndexStream.MoveRoot(oldIndex, newIndex))
+                throw new InvalidDataException();
         }
 
         private long BTreeNodeCount {
@@ -854,7 +924,7 @@ namespace Squared.Data.Mangler {
 
             if (!foundExisting) {
                 // BTree insert
-                throw new NotImplementedException();
+                BTreeInsert(ref nodeIndex, ref valueIndex);
             }
 
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.ReadWrite)) {
