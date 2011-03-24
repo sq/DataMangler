@@ -122,6 +122,10 @@ namespace Squared.Data.Mangler.Internal {
         [SuppressUnmanagedCodeSecurity]
         public static extern unsafe int memmove (byte* dest, byte* src, UIntPtr count);
 
+        [DllImport("msvcrt.dll", CallingConvention = CallingConvention.Cdecl)]
+        [SuppressUnmanagedCodeSecurity]
+        public static extern unsafe int memset (byte* dest, int value, UIntPtr count);
+
         public static FileStream OpenAlternateStream (string filename, string streamName) {
             const string prefix = @"\\?\";
             var path = String.Format("{0}{1}:{2}", prefix, filename, streamName);

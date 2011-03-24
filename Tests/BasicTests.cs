@@ -204,7 +204,7 @@ namespace Squared.Data.Mangler.Tests {
 
         [Test]
         public void CanWriteLotsOfValuesSequentially () {
-            const int numValues = 20000;
+            const int numValues = 200;
 
             long startTime = Time.Ticks;
             Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues, 1));
@@ -225,7 +225,7 @@ namespace Squared.Data.Mangler.Tests {
 
         [Test]
         public void CanWriteLotsOfValuesInReverse () {
-            const int numValues = 20000;
+            const int numValues = 200;
 
             long startTime = Time.Ticks;
             Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues, -1));
@@ -234,6 +234,8 @@ namespace Squared.Data.Mangler.Tests {
                 "Wrote {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
                 numValues, elapsedSeconds, numValues / elapsedSeconds
             );
+
+            Console.WriteLine(String.Join(", ", (from k in Tangle.Keys select k.Value.ToString()).ToArray()));
 
             startTime = Time.Ticks;
             Scheduler.WaitFor(CheckLotsOfValues(Tangle, numValues));
