@@ -246,6 +246,60 @@ namespace Squared.Data.Mangler.Tests {
             );
         }
 
+        protected IEnumerator<object> WriteLotsOfValuesInBatch (Tangle<int> tangle, int numIterations, int direction) {
+            int batchSize = 256;
+            Tangle<int>.SetBatch batch = null;
+
+            if (direction > 0)
+                for (int i = 0; i < numIterations; i++) {
+                    if (batch == null)
+                        batch = new Tangle<int>.SetBatch(batchSize);
+
+                    batch.Add(i, i);
+
+                    if (batch.Count == batchSize) {
+                        yield return batch.Execute(Tangle);
+                        batch = null;
+                    }
+                }
+            else
+                for (int i = numIterations - 1; i >= 0; i--) {
+                    if (batch == null)
+                        batch = new Tangle<int>.SetBatch(batchSize);
+
+                    batch.Add(i, i);
+
+                    if (batch.Count == batchSize) {
+                        yield return batch.Execute(Tangle);
+                        batch = null;
+                    }
+                }
+
+            if (batch != null)
+                yield return batch.Execute(Tangle);
+        }
+
+        [Test]
+        public void BatchValuesInReverse () {
+            const int numValues = 500000;
+
+            long startTime = Time.Ticks;
+            Scheduler.WaitFor(WriteLotsOfValuesInBatch(Tangle, numValues, -1));
+            decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "Wrote {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                numValues, elapsedSeconds, numValues / elapsedSeconds
+            );
+
+            startTime = Time.Ticks;
+            Scheduler.WaitFor(CheckLotsOfValues(Tangle, numValues));
+            elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "Read {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                numValues, elapsedSeconds, numValues / elapsedSeconds
+            );
+        }
+
         protected IEnumerator<object> CheckLotsOfValues (Tangle<int> tangle, int numIterations) {
             for (int i = 0; i < numIterations; i++) {
                 var f = tangle.Get(i);

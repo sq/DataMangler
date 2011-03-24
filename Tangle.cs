@@ -270,6 +270,58 @@ namespace Squared.Data.Mangler {
             }
         }
 
+        public struct SetBatchItem {
+            public TangleKey Key;
+            public T Value;
+
+            public SetBatchItem (TangleKey key, T value) {
+                Key = key;
+                Value = value;
+            }
+
+            public SetBatchItem (TangleKey key, ref T value) {
+                Key = key;
+                Value = value;
+            }
+        }
+
+        public class SetBatch {
+            public readonly int Capacity;
+            internal readonly SetBatchItem[] Buffer;
+            private int _Count;
+
+            public SetBatch (int capacity) {
+                Capacity = capacity;
+                Buffer = new SetBatchItem[capacity];
+            }
+
+            public int Count {
+                get {
+                    return _Count;
+                }
+            }
+
+            new public void Add (TangleKey key, T value) {
+                if (_Count >= Capacity)
+                    throw new IndexOutOfRangeException();
+
+                Buffer[_Count++] = new SetBatchItem(key, value);
+            }
+
+            new public void Add (TangleKey key, ref T value) {
+                if (_Count >= Capacity)
+                    throw new IndexOutOfRangeException();
+
+                Buffer[_Count++] = new SetBatchItem(key, ref value);
+            }
+
+            public Future<int> Execute (Tangle<T> tangle, bool replaceExistingItems = true) {
+                var thunk = new SetBatchThunk(this, replaceExistingItems);
+                tangle.QueueWorkItem(thunk);
+                return thunk.Future;
+            }
+        }
+
 
         /// <summary>
         /// Called to update a value within the tangle.
@@ -310,6 +362,36 @@ namespace Squared.Data.Mangler {
                     Future.SetResult(tangle.InternalSet(Key, ref Value, this), null);
                 } catch (Exception ex) {
                     Future.SetResult(false, ex);
+                }
+            }
+        }
+
+        private class SetBatchThunk : IWorkItem<T>, IReplaceCallback {
+            public readonly Future<int> Future = new Future<int>();
+            public readonly SetBatch Batch;
+            public readonly bool ShouldReplace;
+
+            public SetBatchThunk (SetBatch batch, bool shouldReplace) {
+                Batch = batch;
+                ShouldReplace = shouldReplace;
+            }
+
+            bool IReplaceCallback.ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue) {
+                return ShouldReplace;
+            }
+
+            public void Execute (Tangle<T> tangle) {
+                int result = 0;
+                try {
+                    var items = Batch.Buffer;
+                    for (int i = 0, c = Batch.Count; i < c; i++) {
+                        if (tangle.InternalSet(items[i].Key, ref items[i].Value, this))
+                            result += 1;
+                    }
+
+                    Future.SetResult(result, null);
+                } catch (Exception ex) {
+                    Future.SetResult(result, ex);
                 }
             }
         }
