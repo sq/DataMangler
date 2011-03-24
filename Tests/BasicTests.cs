@@ -193,9 +193,13 @@ namespace Squared.Data.Mangler.Tests {
             );
         }
 
-        protected IEnumerator<object> WriteLotsOfValues (Tangle<int> tangle, int numIterations) {
-            for (int i = 0; i < numIterations; i++)
-                yield return tangle.Set(i, i);
+        protected IEnumerator<object> WriteLotsOfValues (Tangle<int> tangle, int numIterations, int direction) {
+            if (direction > 0)
+                for (int i = 0; i < numIterations; i++)
+                    yield return tangle.Set(i, i);
+            else
+                for (int i = numIterations - 1; i >= 0; i--)
+                    yield return tangle.Set(i, i);
         }
 
         [Test]
@@ -203,7 +207,28 @@ namespace Squared.Data.Mangler.Tests {
             const int numValues = 5000;
 
             long startTime = Time.Ticks;
-            Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues));
+            Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues, 1));
+            decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "Wrote {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                numValues, elapsedSeconds, numValues / elapsedSeconds
+            );
+
+            startTime = Time.Ticks;
+            Scheduler.WaitFor(CheckLotsOfValues(Tangle, numValues));
+            elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "Read {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                numValues, elapsedSeconds, numValues / elapsedSeconds
+            );
+        }
+
+        [Test]
+        public void CanWriteLotsOfValuesInReverse () {
+            const int numValues = 5000;
+
+            long startTime = Time.Ticks;
+            Scheduler.WaitFor(WriteLotsOfValues(Tangle, numValues, -1));
             decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
             Console.WriteLine(
                 "Wrote {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",

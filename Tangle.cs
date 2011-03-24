@@ -42,7 +42,7 @@ namespace Squared.Data.Mangler.Internal {
         public uint KeyOffset, DataOffset;
         public ushort KeyLength;
         public uint DataLength;
-        public byte KeyType, IsValid;
+        public byte KeyType;
     }
 }
 
@@ -70,11 +70,11 @@ namespace Squared.Data.Mangler {
         }
 
         private static void RegisterType<T> () {
-            if (TypeToTypeId.Count > 255)
+            if (TypeToTypeId.Count > 254)
                 throw new InvalidOperationException("Too many registered types");
 
             var type = typeof(T);
-            byte id = (byte)TypeToTypeId.Count;
+            byte id = (byte)(TypeToTypeId.Count + 1);
             TypeToTypeId[type] = id;
             TypeIdToType[id] = type;
         }
@@ -116,7 +116,9 @@ namespace Squared.Data.Mangler {
 
         public TangleKey (byte[] array, int offset, int count, byte originalType) {
             if (count >= ushort.MaxValue)
-                throw new InvalidOperationException("Key length limit exceeded");
+                throw new InvalidDataException("Key too long");
+            if (originalType == 0)
+                throw new InvalidDataException("Invalid key type");
 
             KeyData = new ArraySegment<byte>(array, offset, count);
             OriginalTypeId = originalType;
@@ -416,7 +418,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
             ReplaceCallback replaceCallback = 
                 (ref IndexEntry indexEntry, ref T newValue) => {
                     T oldValue;
-                    ReadValue(ref indexEntry, out oldValue);
+                    ReadData(ref indexEntry, out oldValue);
                     newValue = updateCallback(oldValue);
                     return true;
                 };
@@ -435,7 +437,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
         public Future<bool> AddOrUpdate (TangleKey key, T value, DecisionUpdateCallback updateCallback) {
             ReplaceCallback replaceCallback =
                 (ref IndexEntry indexEntry, ref T newValue) => {
-                    ReadValue(ref indexEntry, out newValue);
+                    ReadData(ref indexEntry, out newValue);
                     return updateCallback(ref newValue);
                 };
 
@@ -478,6 +480,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
             }
         }
 
+        /*
         private unsafe int CompareKeys (byte * lhs, uint lengthLhs, byte * rhs, uint lengthRhs) {
             uint compareLength = Math.Min(lengthLhs, lengthRhs);
 
@@ -494,6 +497,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
             else
                 return 0;
         }
+         */
 
         private StreamRange AccessIndex (long index) {
             long count = (IndexStream.Length / IndexEntry.Size);
@@ -520,14 +524,22 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
                 using (var indexRange = AccessIndex(pivot)) {
                     var pEntry = (IndexEntry *)indexRange.Pointer;
-                    if (pEntry->IsValid != 1)
+                    if (pEntry->KeyType == 0)
                         throw new InvalidDataException();
 
                     using (var keyRange = KeyStream.AccessRange(
                         pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
                     )) {
                         var pLhs = keyRange.Pointer;
-                        delta = CompareKeys(pLhs, pEntry->KeyLength, pRhs, lengthRhs);
+
+                        var compareLength = Math.Min(pEntry->KeyLength, lengthRhs);
+                        delta = Native.memcmp(pLhs, pRhs, new UIntPtr(compareLength));
+                        if (delta == 0) {
+                            if (pEntry->KeyLength > compareLength)
+                                delta = 1;
+                            else if (lengthRhs > compareLength)
+                                delta = -1;
+                        }
                     }
 
                     if (delta == 0) {
@@ -559,7 +571,10 @@ For more information, see http://support.microsoft.com/kb/105763.";
             return IndexEntryByKey(0, IndexCount, ref key, out resultEntry, out resultIndex);
         }
 
-        private void ReadValue (ref IndexEntry entry, out T value) {
+        private void ReadData (ref IndexEntry entry, out T value) {
+            if (entry.KeyType == 0)
+                throw new InvalidDataException();
+
             using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength))
             using (var ms = new UnmanagedMemoryStream(range.Pointer, entry.DataLength, entry.DataLength, FileAccess.Read))
                 Deserializer(ms, out value);
@@ -591,22 +606,27 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 positionToClear, (uint)size,
                 MemoryMappedFileAccess.ReadWrite
             )) {
+                Native.memmove(range.Pointer + IndexEntry.Size, range.Pointer, new UIntPtr((ulong)(size - IndexEntry.Size)));
+                /*
                 var ptr = range.Pointer;
 
                 while (position >= 0) {
                     IndexEntry* pSource = (IndexEntry *)(ptr + position);
                     IndexEntry* pDest = (IndexEntry*)(ptr + position + IndexEntry.Size);
 
-                    if (pSource->IsValid != 1)
+                    var kt = pSource->KeyType;
+                    if (kt == 0)
                         throw new InvalidDataException();
-                    pSource->IsValid = 0;
+
+                    pSource->KeyType = 0;
 
                     *pDest = *pSource;
 
-                    pDest->IsValid = 1;
+                    pDest->KeyType = kt;
 
                     position -= IndexEntry.Size;
                 }
+                 */
             }
         }
 
@@ -630,14 +650,16 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 using (var range = AccessIndex(index)) {
                     var pEntry = (IndexEntry*)range.Pointer;
 
-                    if ((pEntry->IsValid != 1) ||
+                    var kt = pEntry->KeyType;
+
+                    if ((kt == 0) ||
                         (pEntry->DataOffset != existingOffset) || 
                         (pEntry->DataLength != existingLength))
                         throw new InvalidDataException();
 
-                    pEntry->IsValid = 0;
+                    pEntry->KeyType = 0;
                     WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
-                    pEntry->IsValid = 1;
+                    pEntry->KeyType = kt;
                 }
             }
         }
@@ -653,8 +675,8 @@ For more information, see http://support.microsoft.com/kb/105763.";
         //  The IndexEntry's IsValid must be 0.
         // newOffset must specify the offset within the data stream where the data is to be written.
         //  In most cases this should be equal to DataOffset, but in the case of AppendData it will be different.
-        private unsafe void WriteData (ref IndexEntry indexEntry, ref ArraySegment<byte> data, WriteModes writeMode, long dataOffset) {
-            if (indexEntry.IsValid != 0)
+        private unsafe void WriteData (ref IndexEntry indexEntry, ref ArraySegment<byte> data, WriteModes writeMode, long? dataOffset) {
+            if (indexEntry.KeyType != 0)
                 throw new InvalidDataException();
             if (writeMode == WriteModes.Invalid)
                 throw new InvalidDataException();
@@ -664,11 +686,15 @@ For more information, see http://support.microsoft.com/kb/105763.";
             if (writeMode == WriteModes.AppendData) {
                 using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write))
                     ZeroBytes(range, 0, indexEntry.DataLength);
-            }
-            
-            indexEntry.DataOffset = (uint)dataOffset;
-            if (writeMode != WriteModes.ReplaceData)
+
+                indexEntry.DataOffset = (uint)dataOffset.Value;
                 indexEntry.DataLength = count;
+            } else if (writeMode != WriteModes.ReplaceData) {
+                if (dataOffset.HasValue)
+                    indexEntry.DataOffset = (uint)dataOffset.Value;
+
+                indexEntry.DataLength = count;
+            }
 
             using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write)) {
                 WriteBytes(range, 0, data);
@@ -681,13 +707,13 @@ For more information, see http://support.microsoft.com/kb/105763.";
                     indexEntry.DataLength = count;
                 }
             }
-
         }
 
         private unsafe bool InternalSet (TangleKey key, T value, ReplaceCallback replacementCallback) {
             WriteModes writeMode = WriteModes.Invalid;
             IndexEntry indexEntry;
-            long offset = 0, dataOffset = 0, keyOffset = 0;
+            long offset = 0, keyOffset = 0;
+            long? dataOffset = null;
             long positionToClear = 0, emptyPosition = 0;
             long index, count = IndexCount;
 
@@ -743,23 +769,22 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
                     if (writeMode == WriteModes.AppendIndex || writeMode == WriteModes.InsertIndex) {
                         *pEntry = new IndexEntry {
-                            DataOffset = (uint)dataOffset,
+                            DataOffset = (uint)dataOffset.Value,
                             KeyOffset = (uint)keyOffset,
                             DataLength = (uint)ms.Length,
                             KeyLength = (ushort)key.KeyData.Count,
-                            KeyType = key.OriginalTypeId,
-                            IsValid = 0
+                            KeyType = 0
                         };
 
                         WriteKey(ref *pEntry, ref key);
                     } else {
-                        pEntry->IsValid = 0;
+                        pEntry->KeyType = 0;
                     }
 
                     var segment = ms.GetSegment();
                     WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
 
-                    pEntry->IsValid = 1;
+                    pEntry->KeyType = key.OriginalTypeId;
                 }
             }
 
@@ -775,7 +800,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
         private unsafe TangleKey GetKeyFromIndex (long index) {
             using (var indexRange = AccessIndex(index)) {
                 var pEntry = (IndexEntry *)indexRange.Pointer;
-                if (pEntry->IsValid != 1)
+                if (pEntry->KeyType == 0)
                     throw new InvalidDataException();
 
                 using (var keyRange = KeyStream.AccessRange(
@@ -819,7 +844,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
                 return false;
             }
 
-            ReadValue(ref indexEntry, out value);
+            ReadData(ref indexEntry, out value);
             return true;
         }
 
@@ -829,7 +854,7 @@ For more information, see http://support.microsoft.com/kb/105763.";
 
             using (var range = AccessIndex(index)) {
                 var pEntry = (IndexEntry*)range.Pointer;
-                ReadValue(ref *pEntry, out result);
+                ReadData(ref *pEntry, out result);
             }
         }
 

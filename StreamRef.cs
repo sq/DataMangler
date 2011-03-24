@@ -25,6 +25,7 @@ using System.IO;
 using Microsoft.Win32.SafeHandles;
 using System.Collections.Generic;
 using Squared.Util;
+using System.Security;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -114,6 +115,14 @@ namespace Squared.Data.Mangler.Internal {
             NativeFileFlags flags,
             IntPtr template
         );
+        
+        [DllImport("msvcrt.dll", CallingConvention = CallingConvention.Cdecl)]
+        [SuppressUnmanagedCodeSecurity]
+        public static extern unsafe int memcmp (byte * lhs, byte * rhs, UIntPtr count);
+
+        [DllImport("msvcrt.dll", CallingConvention = CallingConvention.Cdecl)]
+        [SuppressUnmanagedCodeSecurity]
+        public static extern unsafe int memmove (byte* dest, byte* src, UIntPtr count);
 
         public static FileStream OpenAlternateStream (string filename, string streamName) {
             const string prefix = @"\\?\";
