@@ -71,24 +71,21 @@ namespace Squared.Data.Mangler.Internal {
         }
     }
 
-    [StructLayout(LayoutKind.Explicit, Size = 16)]
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
     internal unsafe struct IndexEntry {
+        public const int KeyPrefixSize = 4;
         public static readonly uint Size;
 
         static IndexEntry () {
             Size = (uint)Marshal.SizeOf(typeof(IndexEntry));
         }
 
-        [FieldOffset(0)]
         public uint DataOffset;
-        [FieldOffset(4)]
         public uint DataLength;
-        [FieldOffset(8)]
         public uint KeyOffset;
-        [FieldOffset(12)]
         public ushort KeyLength;
-        [FieldOffset(14)]
         public ushort KeyType;
+        public fixed byte KeyPrefix[KeyPrefixSize];
     }
 }
 
@@ -677,6 +674,7 @@ namespace Squared.Data.Mangler {
         private unsafe bool SearchValues (IndexEntry * entries, ushort entryCount, byte * pSearchKey, uint searchKeyLength, out uint resultIndex) {
             int min = 0, max = entryCount - 1;
             int delta = 0, pivot;
+            uint compareLength;
 
             while (min <= max) {
                 pivot = min + ((max - min) >> 1);
@@ -685,19 +683,30 @@ namespace Squared.Data.Mangler {
                 if (pEntry->KeyType == 0)
                     throw new InvalidDataException();
 
+                compareLength = Math.Min(Math.Min(pEntry->KeyLength, searchKeyLength), IndexEntry.KeyPrefixSize);
+
+                // Calling out to a function here introduces unnecessary overhead since the prefix is so small
+                for (uint i = 0; i < compareLength; i++) {
+                    delta = pEntry->KeyPrefix[i] - pSearchKey[i];
+                    if (delta != 0)
+                        break;
+                }
+
+                if ((delta == 0) && (pEntry->KeyLength > IndexEntry.KeyPrefixSize))
                 using (var keyRange = KeyStream.AccessRange(
                     pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
                 )) {
                     var pLhs = keyRange.Pointer;
 
-                    var compareLength = Math.Min(pEntry->KeyLength, searchKeyLength);
+                    compareLength = Math.Min(pEntry->KeyLength, searchKeyLength);
                     delta = Native.memcmp(pLhs, pSearchKey, new UIntPtr(compareLength));
-                    if (delta == 0) {
-                        if (pEntry->KeyLength > searchKeyLength)
-                            delta = 1;
-                        else if (searchKeyLength > pEntry->KeyLength)
-                            delta = -1;
-                    }
+                }
+
+                if (delta == 0) {
+                    if (pEntry->KeyLength > searchKeyLength)
+                        delta = 1;
+                    else if (searchKeyLength > pEntry->KeyLength)
+                        delta = -1;
                 }
 
                 if (delta == 0) {
@@ -1030,8 +1039,12 @@ namespace Squared.Data.Mangler {
         }
 
         private static void WriteBytes (byte* ptr, long offset, ArraySegment<byte> bytes) {
-            for (uint i = 0; i < bytes.Count; i++)
-                ptr[i + offset] = bytes.Array[i + bytes.Offset];
+            WriteBytes(ptr, offset, bytes.Array, bytes.Offset, bytes.Count);
+        }
+
+        private static void WriteBytes (byte* ptr, long offset, byte[] source, int sourceOffset, int count) {
+            for (uint i = 0; i < count; i++)
+                ptr[i + offset] = source[i + sourceOffset];
         }
 
         private static void ZeroBytes (byte* ptr, long offset, uint count) {
@@ -1065,8 +1078,15 @@ namespace Squared.Data.Mangler {
         }
 
         private unsafe void WriteKey (ref IndexEntry indexEntry, ref TangleKey key) {
-            using (var keyRange = KeyStream.AccessRange(indexEntry.KeyOffset, indexEntry.KeyLength, MemoryMappedFileAccess.Write))
-                WriteBytes(keyRange.Pointer, 0, key.Data);
+            var prefixSize = Math.Min(key.Data.Count, IndexEntry.KeyPrefixSize);
+
+            fixed (byte* pPrefix = indexEntry.KeyPrefix)
+                WriteBytes(pPrefix, 0, key.Data.Array, key.Data.Offset, prefixSize);
+
+            if (prefixSize < key.Data.Count) {
+                using (var keyRange = KeyStream.AccessRange(indexEntry.KeyOffset, indexEntry.KeyLength, MemoryMappedFileAccess.Write))
+                    WriteBytes(keyRange.Pointer, 0, key.Data);
+            }
         }
 
         // IndexEntry must be fully prepared for the write operation:
@@ -1149,7 +1169,11 @@ namespace Squared.Data.Mangler {
                         writeMode = WriteModes.ReplaceData;
                 } else {
                     writeMode = WriteModes.AppendDataAndKey;
-                    keyOffset = KeyStream.AllocateSpace((uint)key.Data.Count);
+
+                    if (key.Data.Count > IndexEntry.KeyPrefixSize)
+                        keyOffset = KeyStream.AllocateSpace((uint)key.Data.Count);
+                    else
+                        keyOffset = 0;
                 }
 
                 if (writeMode != WriteModes.ReplaceData)
@@ -1247,14 +1271,17 @@ namespace Squared.Data.Mangler {
         }
 
         private unsafe TangleKey GetKeyOfEntry (IndexEntry* pEntry) {
-            using (var keyRange = KeyStream.AccessRange(
-                pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
-            )) {
-                byte[] buffer = new byte[pEntry->KeyLength];
-                ReadBytes(keyRange.Pointer, 0, buffer, 0, pEntry->KeyLength);
-
-                return new TangleKey(buffer, pEntry->KeyType);
+            byte[] buffer = new byte[pEntry->KeyLength];
+            if (pEntry->KeyLength <= IndexEntry.KeyPrefixSize) {
+                fixed (byte * pBuffer = buffer)
+                    Native.memmove(pBuffer, pEntry->KeyPrefix, new UIntPtr(pEntry->KeyLength));
+            } else {
+                using (var keyRange = KeyStream.AccessRange(
+                    pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
+                ))
+                    ReadBytes(keyRange.Pointer, 0, buffer, 0, pEntry->KeyLength);
             }
+            return new TangleKey(buffer, pEntry->KeyType);
         }
 
         private unsafe TangleKey GetKeyOfNodeValue (long nodeIndex, uint valueIndex) {
