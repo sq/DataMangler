@@ -217,18 +217,17 @@ namespace Squared.Data.Mangler.Internal {
         public readonly MemoryMappedFile File;
         public readonly long FileLength;
         public readonly int Capacity;
-        private readonly Queue<CacheEntry> ReadCache, ReadWriteCache;
+        private readonly Queue<CacheEntry> Cache;
 
-        public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 3) {
+        public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 4) {
             File = file;
             FileLength = fileLength;
             Capacity = capacity;
-            ReadCache = new Queue<CacheEntry>(capacity);
-            ReadWriteCache = new Queue<CacheEntry>(capacity);
+            Cache = new Queue<CacheEntry>(capacity);
         }
 
         public MemoryMappedViewAccessor CreateViewUncached (long offset, uint size, MemoryMappedFileAccess access, out long actualOffset, out uint actualSize) {
-            const uint chunkSize = 1024 * 1024 * 8;
+            const uint chunkSize = 1024 * 1024 * 16;
 
             actualOffset = (offset / chunkSize * chunkSize);
             if (actualOffset < 0)
@@ -249,15 +248,7 @@ namespace Squared.Data.Mangler.Internal {
             if (access == MemoryMappedFileAccess.Write)
                 access = MemoryMappedFileAccess.ReadWrite;
 
-            Queue<CacheEntry> cache;
-            if (access == MemoryMappedFileAccess.Read)
-                cache = ReadCache;
-            else if (access == MemoryMappedFileAccess.ReadWrite)
-                cache = ReadWriteCache;
-            else
-                throw new ArgumentException("Invalid access mode: Only Read, ReadWrite and Write are acceptable");
-
-            foreach (var item in cache) {
+            foreach (var item in Cache) {
                 if (offset < item.Offset)
                     continue;
                 if (offset + size > item.Offset + item.Size)
@@ -266,31 +257,31 @@ namespace Squared.Data.Mangler.Internal {
                 return new Ref(item);
             }
 
-            if (cache.Count > Capacity) {
-                CacheEntry ce = cache.Dequeue();
+            if (Cache.Count > Capacity) {
+                CacheEntry ce = Cache.Dequeue();
                 ce.RemoveRef();
             }
 
             long actualOffset;
             uint actualSize;
-            var view = CreateViewUncached(offset, size, access, out actualOffset, out actualSize);
+            var view = CreateViewUncached(offset, size, MemoryMappedFileAccess.ReadWrite, out actualOffset, out actualSize);
 
             var newEntry = new CacheEntry(view, actualOffset, actualSize);
-            cache.Enqueue(newEntry);
+            Cache.Enqueue(newEntry);
             return new Ref(newEntry);
         }
 
         public void Dispose () {
-            while (ReadCache.Count > 0)
-                ReadCache.Dequeue().Dispose();
-            while (ReadWriteCache.Count > 0)
-                ReadWriteCache.Dequeue().Dispose();
+            while (Cache.Count > 0)
+                Cache.Dequeue().Dispose();
         }
     }
 
     internal class StreamRef : IDisposable {
         public static readonly uint HeaderSize = (uint)Marshal.SizeOf(typeof(StreamHeader));
-        public const uint ChunkSize = 256 * 1024;
+        public const uint InitialSize = 64 * 1024;
+        public const uint DoublingThreshold = 1024 * 1024 * 32;
+        public const uint PostDoublingGrowthRate = 1024 * 1024 * 8;
 
         public event EventHandler LengthChanging, LengthChanged;
 
@@ -307,7 +298,7 @@ namespace Squared.Data.Mangler.Internal {
             NativeStream = nativeStream;
             OwnsStream = ownsStream;
 
-            CreateHandles(ChunkSize);
+            CreateHandles(InitialSize);
         }
 
         protected void CreateHandles (long capacity) {
@@ -339,7 +330,9 @@ namespace Squared.Data.Mangler.Internal {
             // We grow the stream by a fixed amount every time we run out
             //  of space. Doubling or some other algorithm might be better,
             //  but this is simple and predictable.
-            var newCapacity = (capacity + ChunkSize - 1) / ChunkSize * ChunkSize;
+            var newCapacity = StreamCapacity * 2;
+            if (newCapacity >= DoublingThreshold)
+                newCapacity = StreamCapacity + PostDoublingGrowthRate;
 
             if (LengthChanging != null)
                 LengthChanging(this, EventArgs.Empty);

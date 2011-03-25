@@ -703,6 +703,10 @@ namespace Squared.Data.Mangler {
             return new Barrier(this, createOpened);
         }
 
+        public Batch<T> CreateBatch (int capacity) {
+            return new Batch<T>(capacity);
+        }
+
         /// <summary>
         /// Reads a value from the tangle, looking it up via its key.
         /// </summary>
