@@ -3,6 +3,7 @@ using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.IO;
 using System.Linq.Expressions;
+using Squared.Task;
 
 namespace Squared.Data.Mangler.Internal {
     delegate SafeBuffer GetSafeBufferFunc (UnmanagedMemoryAccessor accessor);
@@ -10,6 +11,12 @@ namespace Squared.Data.Mangler.Internal {
 
     internal interface IWorkItem<T> {
         void Execute (Tangle<T> tangle);
+    }
+
+    internal interface IWorkItemWithFuture<T, U> : IWorkItem<T> {
+        Future<U> Future {
+            get;
+        }
     }
 
     public static class InternalExtensions {

@@ -316,9 +316,7 @@ namespace Squared.Data.Mangler {
             }
 
             public Future<int> Execute (Tangle<T> tangle, bool replaceExistingItems = true) {
-                var thunk = new SetBatchThunk(this, replaceExistingItems);
-                tangle.QueueWorkItem(thunk);
-                return thunk.Future;
+                return tangle.QueueWorkItem(new SetBatchThunk(this, replaceExistingItems));
             }
         }
 
@@ -341,10 +339,54 @@ namespace Squared.Data.Mangler {
             bool ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue);
         }
 
-        private class SetThunk : IWorkItem<T>, IReplaceCallback {
-            public readonly Future<bool> Future = new Future<bool>();
-            public readonly TangleKey Key;
+        private abstract class ThunkBase<U> : IWorkItemWithFuture<T, U>, IDisposable {
+            protected Future<U> Future = new Future<U>();
+            protected Exception Failure = null;
+
+            protected abstract void OnExecute (Tangle<T> tangle, out U result);
+
+            protected void Fail (Exception ex) {
+                Failure = ex;
+            }
+
+            public void Execute (Tangle<T> tangle) {
+                try {
+                    U result;
+                    OnExecute(tangle, out result);
+
+                    if (Failure != null)
+                        Future.Fail(Failure);
+                    else
+                        Future.Complete(result);
+                } catch (Exception ex) {
+                    Future.Fail(ex);
+                }
+                Dispose();
+            }
+
+            Future<U> IWorkItemWithFuture<T, U>.Future {
+                get {
+                    return Future;
+                }
+            }
+
+            public virtual void Dispose () {
+                Future = null;
+                Failure = null;
+            }
+        }
+
+        private abstract class SetThunkBase<U> : ThunkBase<U> {
             public T Value;
+
+            public override void Dispose () {
+                base.Dispose();
+                Value = default(T);
+            }
+        }
+
+        private class SetThunk : SetThunkBase<bool>, IReplaceCallback {
+            public readonly TangleKey Key;
             public readonly bool ShouldReplace;
 
             public SetThunk (ref TangleKey key, ref T value, bool shouldReplace) {
@@ -357,18 +399,13 @@ namespace Squared.Data.Mangler {
                 return ShouldReplace;
             }
 
-            public void Execute (Tangle<T> tangle) {
-                try {
-                    Future.SetResult(tangle.InternalSet(Key, ref Value, this), null);
-                } catch (Exception ex) {
-                    Future.SetResult(false, ex);
-                }
+            protected override void OnExecute (Tangle<T> tangle, out bool result) {
+                result = tangle.InternalSet(Key, ref Value, this);
             }
         }
 
-        private class SetBatchThunk : IWorkItem<T>, IReplaceCallback {
-            public readonly Future<int> Future = new Future<int>();
-            public readonly SetBatch Batch;
+        private class SetBatchThunk : SetThunkBase<int>, IReplaceCallback {
+            public SetBatch Batch;
             public readonly bool ShouldReplace;
 
             public SetBatchThunk (SetBatch batch, bool shouldReplace) {
@@ -380,26 +417,24 @@ namespace Squared.Data.Mangler {
                 return ShouldReplace;
             }
 
-            public void Execute (Tangle<T> tangle) {
-                int result = 0;
-                try {
-                    var items = Batch.Buffer;
-                    for (int i = 0, c = Batch.Count; i < c; i++) {
-                        if (tangle.InternalSet(items[i].Key, ref items[i].Value, this))
-                            result += 1;
-                    }
+            protected override void OnExecute (Tangle<T> tangle, out int result) {
+                result = 0;
 
-                    Future.SetResult(result, null);
-                } catch (Exception ex) {
-                    Future.SetResult(result, ex);
+                var items = Batch.Buffer;
+                for (int i = 0, c = Batch.Count; i < c; i++) {
+                    if (tangle.InternalSet(items[i].Key, ref items[i].Value, this))
+                        result += 1;
                 }
+            }
+
+            public override void Dispose () {
+                base.Dispose();
+                Batch = null;
             }
         }
 
-        private class UpdateThunk : IWorkItem<T>, IReplaceCallback {
-            public readonly Future<bool> Future = new Future<bool>();
+        private class UpdateThunk : SetThunkBase<bool>, IReplaceCallback {
             public readonly TangleKey Key;
-            public T Value;
             public readonly UpdateCallback Callback;
             public readonly DecisionUpdateCallback DecisionCallback;
 
@@ -429,59 +464,38 @@ namespace Squared.Data.Mangler {
                 }
             }
 
-            public void Execute (Tangle<T> tangle) {
-                try {
-                    Future.SetResult(tangle.InternalSet(Key, ref Value, this), null);
-                } catch (Exception ex) {
-                    Future.SetResult(false, ex);
-                }
+            protected override void OnExecute(Tangle<T> tangle, out bool result) {
+                result = tangle.InternalSet(Key, ref Value, this);
             }
         }
 
-        private class GetThunk : IWorkItem<T> {
-            public readonly Future<T> Future = new Future<T>();
+        private class GetThunk : ThunkBase<T> {
             public readonly TangleKey Key;
 
             public GetThunk (ref TangleKey key) {
                 Key = key;
             }
 
-            public void Execute (Tangle<T> tangle) {
-                try {
-                    T result;
-                    if (tangle.InternalGet(Key, out result))
-                        Future.SetResult(result, null);
-                    else
-                        Future.SetResult(result, new KeyNotFoundException(Key));
-                } catch (Exception ex) {
-                    Future.SetResult(default(T), ex);
-                }
+            protected override void OnExecute (Tangle<T> tangle, out T result) {
+                if (!tangle.InternalGet(Key, out result))
+                    Fail(new KeyNotFoundException(Key));
             }
         }
 
-        private class FindThunk : IWorkItem<T> {
-            public readonly Future<FindResult> Future = new Future<FindResult>();
+        private class FindThunk : ThunkBase<FindResult> {
             public readonly TangleKey Key;
 
             public FindThunk (ref TangleKey key) {
                 Key = key;
             }
 
-            public void Execute (Tangle<T> tangle) {
-                try {
-                    FindResult result;
-                    if (tangle.InternalFind(Key, out result))
-                        Future.SetResult(result, null);
-                    else
-                        Future.SetResult(result, new KeyNotFoundException(Key)); 
-                } catch (Exception ex) {
-                    Future.Fail(ex);
-                }
+            protected override void OnExecute (Tangle<T> tangle, out FindResult result) {
+                if (!tangle.InternalFind(Key, out result))
+                    Fail(new KeyNotFoundException(Key));
             }
         }
 
-        private class GetByIndexThunk : IWorkItem<T> {
-            public readonly Future<T> Future = new Future<T>();
+        private class GetByIndexThunk : ThunkBase<T> {
             public readonly long NodeIndex;
             public readonly uint ValueIndex;
 
@@ -490,22 +504,14 @@ namespace Squared.Data.Mangler {
                 ValueIndex = valueIndex;
             }
 
-            public void Execute (Tangle<T> tangle) {
-                try {
-                    T result;
-                    tangle.InternalGetFoundValue(NodeIndex, ValueIndex, out result);
-                    Future.SetResult(result, null);
-                } catch (Exception ex) {
-                    Future.SetResult(default(T), ex);
-                }
+            protected override void OnExecute (Tangle<T> tangle, out T result) {
+                tangle.InternalGetFoundValue(NodeIndex, ValueIndex, out result);
             }
         }
 
-        private class SetByIndexThunk : IWorkItem<T> {
-            public readonly SignalFuture Future = new SignalFuture();
+        private class SetByIndexThunk : SetThunkBase<NoneType> {
             public readonly long NodeIndex;
             public readonly uint ValueIndex;
-            public T Value;
 
             public SetByIndexThunk (long nodeIndex, uint valueIndex, ref T value) {
                 NodeIndex = nodeIndex;
@@ -513,13 +519,9 @@ namespace Squared.Data.Mangler {
                 Value = value;
             }
 
-            public void Execute (Tangle<T> tangle) {
-                try {
-                    tangle.InternalSetFoundValue(NodeIndex, ValueIndex, ref Value);
-                    Future.Complete();
-                } catch (Exception ex) {
-                    Future.Fail(ex);
-                }
+            protected override void OnExecute (Tangle<T> tangle, out NoneType result) {
+                tangle.InternalSetFoundValue(NodeIndex, ValueIndex, ref Value);
+                result = NoneType.None;
             }
         }
 
@@ -627,21 +629,15 @@ namespace Squared.Data.Mangler {
         /// <returns>A future that will contain the value once it has been read.</returns>
         /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
         public Future<T> Get (TangleKey key) {
-            var thunk = new GetThunk(ref key);
-            QueueWorkItem(thunk);
-            return thunk.Future;
+            return QueueWorkItem(new GetThunk(ref key));
         }
 
         protected Future<T> GetValueByIndex (long nodeIndex, uint valueIndex) {
-            var thunk = new GetByIndexThunk(nodeIndex, valueIndex);
-            QueueWorkItem(thunk);
-            return thunk.Future;
+            return QueueWorkItem(new GetByIndexThunk(nodeIndex, valueIndex));
         }
 
         protected IFuture SetValueByIndex (long nodeIndex, uint valueIndex, ref T value) {
-            var thunk = new SetByIndexThunk(nodeIndex, valueIndex, ref value);
-            QueueWorkItem(thunk);
-            return thunk.Future;
+            return QueueWorkItem(new SetByIndexThunk(nodeIndex, valueIndex, ref value));
         }
 
         /// <summary>
@@ -650,9 +646,7 @@ namespace Squared.Data.Mangler {
         /// <returns>A future that will contain a reference to the key, if it was found.</returns>
         /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
         public Future<FindResult> Find (TangleKey key) {
-            var thunk = new FindThunk(ref key);
-            QueueWorkItem(thunk);
-            return thunk.Future;
+            return QueueWorkItem(new FindThunk(ref key));
         }
 
         /// <summary>
@@ -660,9 +654,7 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public IFuture Set (TangleKey key, T value) {
-            var thunk = new SetThunk(ref key, ref value, true);
-            QueueWorkItem(thunk);
-            return thunk.Future;
+            return QueueWorkItem(new SetThunk(ref key, ref value, true));
         }
 
         /// <summary>
@@ -670,9 +662,7 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk. The future's value will be false if the operation was aborted.</returns>
         public Future<bool> Add (TangleKey key, T value) {
-            var thunk = new SetThunk(ref key, ref value, false);
-            QueueWorkItem(thunk);
-            return thunk.Future;
+            return QueueWorkItem(new SetThunk(ref key, ref value, false));
         }
 
         /// <summary>
@@ -680,9 +670,7 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public Future<bool> AddOrUpdate (TangleKey key, T value, UpdateCallback updateCallback) {
-            var thunk = new UpdateThunk(ref key, ref value, updateCallback);
-            QueueWorkItem(thunk);
-            return thunk.Future;
+            return QueueWorkItem(new UpdateThunk(ref key, ref value, updateCallback));
         }
 
         /// <summary>
@@ -690,12 +678,12 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public Future<bool> AddOrUpdate (TangleKey key, T value, DecisionUpdateCallback updateCallback) {
-            var thunk = new UpdateThunk(ref key, ref value, updateCallback);
-            QueueWorkItem(thunk);
-            return thunk.Future;
+            return QueueWorkItem(new UpdateThunk(ref key, ref value, updateCallback));
         }
 
-        private void QueueWorkItem (IWorkItem<T> workItem) {
+        private Future<U> QueueWorkItem<U> (IWorkItemWithFuture<T, U> workItem) {
+            var future = workItem.Future;
+
             if (_WorkerThread == null)
                 _WorkerThread = new Squared.Task.Internal.WorkerThread<ConcurrentQueue<IWorkItem<T>>>(
                     WorkerThreadFunc, ThreadPriority.Normal, String.Format("Tangle<{0}> Worker", typeof(T).ToString())
@@ -704,6 +692,8 @@ namespace Squared.Data.Mangler {
             _WorkerThread.WorkItems.Enqueue(workItem);
 
             _WorkerThread.Wake();
+
+            return future;
         }
 
         internal void WorkerThreadFunc (ConcurrentQueue<IWorkItem<T>> workItems, ManualResetEvent newWorkItemEvent) {
