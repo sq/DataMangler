@@ -373,6 +373,18 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [Test]
+        public void DisposingTangleFailsPendingOperations () {
+            var barrier = Tangle.CreateBarrier(false);
+            var fOperation = Tangle.Add(1, 1);
+            Scheduler.WaitFor(barrier);
+            Tangle.Dispose();
+
+            Assert.Throws<FutureDisposedException>(
+                () => Scheduler.WaitFor(fOperation)
+            );
+        }
+
+        [Test]
         public void BarrierCollectionOpensAllContainedBarriersWhenOpened () {
             var bc = new BarrierCollection(false, Tangle, Tangle);
             var fOperation = Tangle.Add(1, 1);

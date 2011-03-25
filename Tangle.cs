@@ -344,7 +344,11 @@ namespace Squared.Data.Mangler {
                             Future.Complete(result);
                     }
                 } catch (Exception ex) {
-                    Future.Fail(ex);
+                    if (!Future.Disposed && !Future.Completed)
+                    try {
+                        Future.Fail(ex);
+                    } catch {
+                    }
                 }
 
                 Dispose();
@@ -357,6 +361,7 @@ namespace Squared.Data.Mangler {
             }
 
             public virtual void Dispose () {
+                Future.Dispose();
                 Future = null;
                 Failure = null;
             }
@@ -568,7 +573,8 @@ namespace Squared.Data.Mangler {
 
         internal Squared.Task.Internal.WorkerThread<ConcurrentQueue<IWorkItem<T>>> _WorkerThread;
 
-        private MemoryStream SerializationBuffer;
+        private bool _IsDisposed;
+        private MemoryStream _SerializationBuffer;
         private StreamRange _HeaderRange;
 
         private readonly StreamRef IndexStream;
@@ -622,19 +628,19 @@ namespace Squared.Data.Mangler {
         }
 
         private ArraySegment<byte> Serialize (ref T value) {
-            if (SerializationBuffer == null)
-                SerializationBuffer = new MemoryStream();
+            if (_SerializationBuffer == null)
+                _SerializationBuffer = new MemoryStream();
 
-            Serializer(ref value, SerializationBuffer);
+            Serializer(ref value, _SerializationBuffer);
 
-            var result = new ArraySegment<byte>(SerializationBuffer.GetBuffer(), 0, (int)SerializationBuffer.Length);
+            var result = new ArraySegment<byte>(_SerializationBuffer.GetBuffer(), 0, (int)_SerializationBuffer.Length);
 
-            if (SerializationBuffer.Capacity > MaxSerializationBufferSize) {
-                SerializationBuffer.Dispose();
-                SerializationBuffer = null;
+            if (_SerializationBuffer.Capacity > MaxSerializationBufferSize) {
+                _SerializationBuffer.Dispose();
+                _SerializationBuffer = null;
             } else {
-                SerializationBuffer.Seek(0, SeekOrigin.Begin);
-                SerializationBuffer.SetLength(0);
+                _SerializationBuffer.Seek(0, SeekOrigin.Begin);
+                _SerializationBuffer.SetLength(0);
             }
 
             return result;
@@ -742,6 +748,9 @@ namespace Squared.Data.Mangler {
         }
 
         public Future<U> QueueWorkItem<U> (IWorkItemWithFuture<T, U> workItem) {
+            if (_IsDisposed)
+                throw new ObjectDisposedException("Tangle");
+
             var future = workItem.Future;
 
             if (_WorkerThread == null)
@@ -1427,6 +1436,9 @@ namespace Squared.Data.Mangler {
 
         public IEnumerable<TangleKey> Keys {
             get {
+                if (_IsDisposed)
+                    throw new ObjectDisposedException("Tangle");
+
                 // This should be a depth-first search of the tree...
 
                 long count = BTreeNodeCount;
@@ -1481,6 +1493,17 @@ namespace Squared.Data.Mangler {
         }
 
         public void Dispose () {
+            if (_IsDisposed)
+                return;
+            _IsDisposed = true;
+
+            var workItems = _WorkerThread.WorkItems;
+            _WorkerThread.Dispose();
+
+            IWorkItem<T> wi;
+            while (workItems.TryDequeue(out wi))
+                wi.Dispose();
+
             IndexStream.Dispose();
             DataStream.Dispose();
             KeyStream.Dispose();
