@@ -14,14 +14,16 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [TangleDeserializer]
-        static void Deserialize (Stream input, out SpecialType output) {
-            var br = new BinaryReader(input);
-            output = new SpecialType(br.ReadUInt32());
+        static void Deserialize (ref DeserializationContext<SpecialType> context, out SpecialType output) {
+            using (var input = context.GetStream()) {
+                var br = new BinaryReader(input);
+                output = new SpecialType(br.ReadUInt32());
+            }
         }
 
         [TangleSerializer]
-        static void Serialize (ref SpecialType input, Stream output) {
-            var bw = new BinaryWriter(output);
+        static void Serialize (ref SerializationContext<SpecialType> context, ref SpecialType input) {
+            var bw = new BinaryWriter(context.Stream);
             bw.Write(input.Value);
             bw.Flush();
         }

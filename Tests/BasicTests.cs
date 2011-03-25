@@ -22,6 +22,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using NUnit.Framework;
+using Squared.Data.Mangler.Serialization;
 using Squared.Task;
 using System.IO;
 using Squared.Util;
@@ -57,13 +58,8 @@ namespace Squared.Data.Mangler.Tests {
 
             Tangle = new Tangle<int>(
                 Scheduler, Storage, 
-                serializer: (ref int i, Stream o) => 
-                    o.Write(BitConverter.GetBytes(i), 0, 4),
-                deserializer: (Stream i, out int o) => {
-                    var bytes = new byte[4];
-                    i.Read(bytes, 0, bytes.Length);
-                    o = BitConverter.ToInt32(bytes, 0);
-                },
+                serializer: BlittableSerializer<int>.Serialize,
+                deserializer: BlittableSerializer<int>.Deserialize,
                 ownsStorage: true
             );
         }
@@ -333,13 +329,8 @@ namespace Squared.Data.Mangler.Tests {
 
             Tangle = new Tangle<int>(
                 Scheduler, Storage,
-                serializer: (ref int i, Stream o) =>
-                    o.Write(BitConverter.GetBytes(i), 0, 4),
-                deserializer: (Stream i, out int o) => {
-                    var bytes = new byte[4];
-                    i.Read(bytes, 0, bytes.Length);
-                    o = BitConverter.ToInt32(bytes, 0);
-                },
+                serializer: BlittableSerializer<int>.Serialize,
+                deserializer: BlittableSerializer<int>.Deserialize,
                 ownsStorage: true
             );
         }

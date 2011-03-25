@@ -126,22 +126,22 @@ namespace Squared.Data.Mangler.Internal {
         static Unsafe () {
             var tSafeBuffer = typeof(SafeBuffer);
 
+            var method = tSafeBuffer.GetMethod(
+                "GenericPtrToStructure", 
+                System.Reflection.BindingFlags.Static | 
+                System.Reflection.BindingFlags.NonPublic
+            ).MakeGenericMethod(typeof(T));
             PtrToStructure = (GenericPtrToStructureFunc<T>)Delegate.CreateDelegate(
-                typeof(GenericPtrToStructureFunc<T>), 
-                tSafeBuffer.GetMethod(
-                    "GenericPtrToStructure", 
-                    System.Reflection.BindingFlags.Static | 
-                    System.Reflection.BindingFlags.NonPublic
-                )
+                typeof(GenericPtrToStructureFunc<T>), method, true
             );
 
+            method = tSafeBuffer.GetMethod(
+                "GenericStructureToPtr",
+                System.Reflection.BindingFlags.Static |
+                System.Reflection.BindingFlags.NonPublic
+            ).MakeGenericMethod(typeof(T));
             StructureToPtr = (GenericStructureToPtrFunc<T>)Delegate.CreateDelegate(
-                typeof(GenericStructureToPtrFunc<T>),
-                tSafeBuffer.GetMethod(
-                    "GenericStructureToPtr",
-                    System.Reflection.BindingFlags.Static |
-                    System.Reflection.BindingFlags.NonPublic
-                )
+                typeof(GenericStructureToPtrFunc<T>), method, true
             );
         }
     }

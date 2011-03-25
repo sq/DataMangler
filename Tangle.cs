@@ -628,20 +628,6 @@ namespace Squared.Data.Mangler {
                 InitializeBTree();
         }
 
-        public Tangle (
-            TaskScheduler scheduler,
-            StreamSource storage,
-            Serializer<T> serializer,
-            StreamDeserializer<T> deserializer,
-            bool ownsStorage = true
-        ) : this(
-            scheduler, storage, serializer, 
-            StreamDeserializerAdapter.Get(deserializer),
-            ownsStorage
-        ) {
-
-        }
-
         void IndexStream_LengthChanging (object sender, EventArgs e) {
             _HeaderRange.Dispose();
         }
@@ -659,7 +645,8 @@ namespace Squared.Data.Mangler {
             if (_SerializationBuffer == null)
                 _SerializationBuffer = new MemoryStream();
 
-            Serializer(ref value, _SerializationBuffer);
+            var context = new SerializationContext<T>(this, _SerializationBuffer);
+            Serializer(ref context, ref value);
 
             var result = new ArraySegment<byte>(_SerializationBuffer.GetBuffer(), 0, (int)_SerializationBuffer.Length);
 
@@ -1177,8 +1164,10 @@ namespace Squared.Data.Mangler {
             if (entry.KeyType == 0)
                 throw new InvalidDataException();
 
-            using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength))
-                Deserializer(range.Pointer, entry.DataLength, out value);
+            using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength)) {
+                var context = new DeserializationContext<T>(this, range.Pointer, entry.DataLength);
+                Deserializer(ref context, out value);
+            }
         }
 
         private static void ReadBytes (byte * ptr, long offset, byte[] buffer, long bufferOffset, uint count) {
