@@ -396,5 +396,18 @@ namespace Squared.Data.Mangler.Tests {
                 Assert.AreEqual(s, Scheduler.WaitFor(Tangle.Get("test")));
             }
         }
+
+        [Test]
+        public void TestWastedDataBytes () {
+            Assert.AreEqual(0, Tangle.WastedDataBytes);
+            Scheduler.WaitFor(Tangle.Set(1, "abcd"));
+            Assert.AreEqual(0, Tangle.WastedDataBytes);
+            Scheduler.WaitFor(Tangle.Set(1, "abcdefgh"));
+            Assert.AreEqual(4, Tangle.WastedDataBytes);
+            Scheduler.WaitFor(Tangle.Set(1, "abc"));
+            Assert.AreEqual(9, Tangle.WastedDataBytes);
+            Scheduler.WaitFor(Tangle.Set(1, "abcdefgh"));
+            Assert.AreEqual(12, Tangle.WastedDataBytes);
+        }
     }
 }

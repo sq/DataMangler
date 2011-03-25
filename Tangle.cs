@@ -35,6 +35,7 @@ namespace Squared.Data.Mangler.Internal {
         public static readonly uint Size;
 
         public long RootIndex;
+        public long WastedDataBytes;
         public long ItemCount;
 
         static BTreeHeader () {
@@ -555,7 +556,6 @@ namespace Squared.Data.Mangler {
         internal Squared.Task.Internal.WorkerThread<ConcurrentQueue<IWorkItem<T>>> _WorkerThread;
 
         private MemoryStream SerializationBuffer;
-        private long _WastedDataBytes = 0;
         private StreamRange _HeaderRange;
 
         private readonly StreamRef IndexStream;
@@ -1103,9 +1103,10 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        public long WastedDataBytes {
+        public unsafe long WastedDataBytes {
             get {
-                return _WastedDataBytes;
+                var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
+                return pHeader->WastedDataBytes;
             }
         }
 
@@ -1195,12 +1196,13 @@ namespace Squared.Data.Mangler {
                 throw new InvalidDataException();
 
             var count = (uint)data.Count;
+            var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
 
             if (writeMode == WriteModes.AppendData) {
                 using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write))
                     ZeroBytes(range.Pointer, 0, indexEntry.DataLength);
 
-                _WastedDataBytes += indexEntry.DataLength;
+                Interlocked.Add(ref pHeader->WastedDataBytes, indexEntry.DataLength);
 
                 indexEntry.DataOffset = (uint)dataOffset.Value;
                 indexEntry.DataLength = count;
@@ -1209,6 +1211,8 @@ namespace Squared.Data.Mangler {
                     indexEntry.DataOffset = (uint)dataOffset.Value;
 
                 indexEntry.DataLength = count;
+            } else {
+                Interlocked.Add(ref pHeader->WastedDataBytes, indexEntry.DataLength - count);
             }
 
             using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write)) {
