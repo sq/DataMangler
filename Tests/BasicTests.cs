@@ -321,6 +321,34 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set(1, 3));
             Assert.AreEqual(2, Tangle.Count);
         }
+    }
+
+    [TestFixture]
+    public class SynchronizationTests : BasicTestFixture {
+        public Tangle<int> Tangle;
+
+        [SetUp]
+        public override void SetUp () {
+            base.SetUp();
+
+            Tangle = new Tangle<int>(
+                Scheduler, Storage,
+                serializer: (ref int i, Stream o) =>
+                    o.Write(BitConverter.GetBytes(i), 0, 4),
+                deserializer: (Stream i, out int o) => {
+                    var bytes = new byte[4];
+                    i.Read(bytes, 0, bytes.Length);
+                    o = BitConverter.ToInt32(bytes, 0);
+                },
+                ownsStorage: true
+            );
+        }
+
+        [TearDown]
+        public override void TearDown () {
+            Tangle.Dispose();
+            base.TearDown();
+        }
 
         [Test]
         public void BarrierPreventsOperationsLaterInTheQueueFromCompleting () {
@@ -342,6 +370,18 @@ namespace Squared.Data.Mangler.Tests {
             barrier1.Open();
             Scheduler.WaitFor(barrier2);
             Assert.AreEqual(0, Tangle.Count);
+        }
+
+        [Test]
+        public void BarrierCollectionOpensAllContainedBarriersWhenOpened () {
+            var bc = new BarrierCollection(false, Tangle, Tangle);
+            var fOperation = Tangle.Add(1, 1);
+
+            Scheduler.WaitFor(bc);
+            Assert.IsFalse(fOperation.Completed);
+            bc.Open();
+            Scheduler.WaitFor(fOperation);
+            Assert.AreEqual(1, Tangle.Count);
         }
     }
 

@@ -246,6 +246,25 @@ namespace Squared.Data.Mangler {
         }
     }
 
+    public interface ITangle : IDisposable {
+        IBarrier CreateBarrier (bool createOpened);
+
+        IEnumerable<TangleKey> Keys {
+            get;
+        }
+        long Count {
+            get;
+        }
+    }
+
+    public interface IBarrier : ISchedulable, IDisposable {
+        void Open ();
+
+        IFuture Future {
+            get;
+        }
+    }
+
     /// <summary>
     /// Represents a persistent dictionary keyed by arbitrary byte strings. The values are not stored in any given order on disk, and the values are not required to be resident in memory.
     /// At any given time a portion of the Tangle's values may be resident in memory. If a value is not resident in memory, it will be fetched asynchronously from disk.
@@ -254,7 +273,7 @@ namespace Squared.Data.Mangler {
     /// The Tangle's disk storage engine partitions its storage up into pages based on the provided page size. For optimal performance, this should be an integer multiple of the size of a memory page (typically 4KB).
     /// </summary>
     /// <typeparam name="T">The type of the value stored within the tangle.</typeparam>
-    public unsafe class Tangle<T> : IDisposable {
+    public unsafe class Tangle<T> : ITangle {
         enum WriteModes {
             Invalid,
             AppendDataAndKey, // Append new data and new key
@@ -492,7 +511,7 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        public class Barrier : ThunkBase<NoneType>, ISchedulable {
+        public class Barrier : ThunkBase<NoneType>, IBarrier {
             private readonly ManualResetEventSlim OpenSignal;
             private readonly Future<NoneType> ThunkSignal;
 
@@ -519,7 +538,7 @@ namespace Squared.Data.Mangler {
                 future.Bind(ThunkSignal);
             }
 
-            public Future<NoneType> Future {
+            public IFuture Future {
                 get {
                     return ThunkSignal;
                 }
@@ -648,6 +667,10 @@ namespace Squared.Data.Mangler {
                 WriteBytes(range.Pointer, 0, data);
 
             return spot;
+        }
+
+        IBarrier ITangle.CreateBarrier (bool createOpened) {
+            return this.CreateBarrier(createOpened);
         }
 
         /// <summary>
@@ -1514,6 +1537,49 @@ namespace Squared.Data.Mangler {
 
         public Future<int> Execute (Tangle<T> tangle, bool replaceExistingItems = true) {
             return tangle.QueueWorkItem(new Tangle<T>.BatchThunk(this, replaceExistingItems));
+        }
+    }
+
+    public class BarrierCollection : IBarrier, IDisposable {
+        private readonly List<IBarrier> Barriers = new List<IBarrier>();
+        private readonly IFuture Composite;
+
+        public BarrierCollection (bool waitForAll, IEnumerable<ITangle> tangles) {
+            foreach (var tangle in tangles)
+                Barriers.Add(tangle.CreateBarrier(false));
+
+            var futures = from barrier in Barriers select barrier.Future;
+            if (waitForAll)
+                Composite = Squared.Task.Future.WaitForAll(futures);
+            else
+                Composite = Squared.Task.Future.WaitForFirst(futures);
+        }
+
+        public BarrierCollection (bool waitForAll, params ITangle[] tangles)
+            : this (waitForAll, (IEnumerable<ITangle>)tangles) {
+        }
+
+        public void Dispose () {
+            foreach (var barrier in Barriers)
+                barrier.Dispose();
+
+            Barriers.Clear();
+            Composite.Dispose();
+        }
+
+        public void Open () {
+            foreach (var barrier in Barriers)
+                barrier.Open();
+        }
+
+        public IFuture Future {
+            get {
+                return Composite;
+            }
+        }
+
+        public void Schedule (TaskScheduler scheduler, IFuture future) {
+            future.Bind(Composite);
         }
     }
 }
