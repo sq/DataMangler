@@ -9,11 +9,11 @@ namespace Squared.Data.Mangler.Internal {
     delegate SafeBuffer GetSafeBufferFunc (UnmanagedMemoryAccessor accessor);
     delegate Int64 GetPointerOffsetFunc (MemoryMappedViewAccessor accessor);
 
-    internal interface IWorkItem<T> {
+    public interface IWorkItem<T> {
         void Execute (Tangle<T> tangle);
     }
 
-    internal interface IWorkItemWithFuture<T, U> : IWorkItem<T> {
+    public interface IWorkItemWithFuture<T, U> : IWorkItem<T> {
         Future<U> Future {
             get;
         }

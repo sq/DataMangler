@@ -284,57 +284,6 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        public struct SetBatchItem {
-            public TangleKey Key;
-            public T Value;
-
-            public SetBatchItem (TangleKey key, T value) {
-                Key = key;
-                Value = value;
-            }
-
-            public SetBatchItem (TangleKey key, ref T value) {
-                Key = key;
-                Value = value;
-            }
-        }
-
-        public class SetBatch {
-            public readonly int Capacity;
-            internal readonly SetBatchItem[] Buffer;
-            private int _Count;
-
-            public SetBatch (int capacity) {
-                Capacity = capacity;
-                Buffer = new SetBatchItem[capacity];
-            }
-
-            public int Count {
-                get {
-                    return _Count;
-                }
-            }
-
-            new public void Add (TangleKey key, T value) {
-                if (_Count >= Capacity)
-                    throw new IndexOutOfRangeException();
-
-                Buffer[_Count++] = new SetBatchItem(key, value);
-            }
-
-            new public void Add (TangleKey key, ref T value) {
-                if (_Count >= Capacity)
-                    throw new IndexOutOfRangeException();
-
-                Buffer[_Count++] = new SetBatchItem(key, ref value);
-            }
-
-            public Future<int> Execute (Tangle<T> tangle, bool replaceExistingItems = true) {
-                return tangle.QueueWorkItem(new SetBatchThunk(this, replaceExistingItems));
-            }
-        }
-
-
         /// <summary>
         /// Called to update a value within the tangle.
         /// </summary>
@@ -353,7 +302,7 @@ namespace Squared.Data.Mangler {
             bool ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue);
         }
 
-        private abstract class ThunkBase<U> : IWorkItemWithFuture<T, U>, IDisposable {
+        public abstract class ThunkBase<U> : IWorkItemWithFuture<T, U>, IDisposable {
             protected Future<U> Future = new Future<U>();
             protected Exception Failure = null;
 
@@ -364,17 +313,21 @@ namespace Squared.Data.Mangler {
             }
 
             public void Execute (Tangle<T> tangle) {
+                if (!Future.Disposed)
                 try {
                     U result;
                     OnExecute(tangle, out result);
 
-                    if (Failure != null)
-                        Future.Fail(Failure);
-                    else
-                        Future.Complete(result);
+                    if (!Future.Completed) {
+                        if (Failure != null)
+                            Future.Fail(Failure);
+                        else
+                            Future.Complete(result);
+                    }
                 } catch (Exception ex) {
                     Future.Fail(ex);
                 }
+
                 Dispose();
             }
 
@@ -390,7 +343,7 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private abstract class SetThunkBase<U> : ThunkBase<U> {
+        internal abstract class SetThunkBase<U> : ThunkBase<U> {
             public T Value;
 
             public override void Dispose () {
@@ -418,11 +371,11 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private class SetBatchThunk : SetThunkBase<int>, IReplaceCallback {
-            public SetBatch Batch;
+        internal class BatchThunk : SetThunkBase<int>, IReplaceCallback {
+            public Batch<T> Batch;
             public readonly bool ShouldReplace;
 
-            public SetBatchThunk (SetBatch batch, bool shouldReplace) {
+            public BatchThunk (Batch<T> batch, bool shouldReplace) {
                 Batch = batch;
                 ShouldReplace = shouldReplace;
             }
@@ -536,6 +489,46 @@ namespace Squared.Data.Mangler {
             protected override void OnExecute (Tangle<T> tangle, out NoneType result) {
                 tangle.InternalSetFoundValue(NodeIndex, ValueIndex, ref Value);
                 result = NoneType.None;
+            }
+        }
+
+        public class Barrier : ThunkBase<NoneType>, ISchedulable {
+            private readonly ManualResetEventSlim OpenSignal;
+            private readonly Future<NoneType> ThunkSignal;
+
+            internal Barrier (Tangle<T> tangle, bool opened) {
+                OpenSignal = new ManualResetEventSlim(opened);
+                ThunkSignal = tangle.QueueWorkItem(this);
+            }
+
+            public void Open () {
+                if (OpenSignal.IsSet)
+                    throw new InvalidOperationException("The barrier is already open.");
+
+                OpenSignal.Set();
+            }
+
+            protected override void OnExecute (Tangle<T> tangle, out NoneType result) {
+                ThunkSignal.Complete();
+                OpenSignal.Wait();
+
+                result = NoneType.None;
+            }
+
+            void ISchedulable.Schedule (TaskScheduler scheduler, IFuture future) {
+                future.Bind(ThunkSignal);
+            }
+
+            public Future<NoneType> Future {
+                get {
+                    return ThunkSignal;
+                }
+            }
+
+            public override void Dispose () {
+                OpenSignal.Set();
+                ThunkSignal.Dispose();
+                base.Dispose();
             }
         }
 
@@ -658,6 +651,16 @@ namespace Squared.Data.Mangler {
         }
 
         /// <summary>
+        /// Inserts a barrier into the tangle's work queue. 
+        /// A barrier prevents the execution of work items following it as long as it remains closed, and becomes signaled once that point in the queue is reached.
+        /// </summary>
+        /// <param name="createOpened">If true, the barrier is created open, which allows items following it in the work queue to be executed. Otherwise, the barrier is created closed (and can be opened manually.)</param>
+        /// <returns>The barrier that was created.</returns>
+        public Barrier CreateBarrier (bool createOpened = false) {
+            return new Barrier(this, createOpened);
+        }
+
+        /// <summary>
         /// Reads a value from the tangle, looking it up via its key.
         /// </summary>
         /// <returns>A future that will contain the value once it has been read.</returns>
@@ -715,7 +718,7 @@ namespace Squared.Data.Mangler {
             return QueueWorkItem(new UpdateThunk(ref key, ref value, updateCallback));
         }
 
-        private Future<U> QueueWorkItem<U> (IWorkItemWithFuture<T, U> workItem) {
+        public Future<U> QueueWorkItem<U> (IWorkItemWithFuture<T, U> workItem) {
             var future = workItem.Future;
 
             if (_WorkerThread == null)
@@ -730,14 +733,14 @@ namespace Squared.Data.Mangler {
             return future;
         }
 
-        internal void WorkerThreadFunc (ConcurrentQueue<IWorkItem<T>> workItems, ManualResetEvent newWorkItemEvent) {
+        internal void WorkerThreadFunc (ConcurrentQueue<IWorkItem<T>> workItems, ManualResetEventSlim newWorkItemEvent) {
             while (true) {
                 IWorkItem<T> item;
                 while (workItems.TryDequeue(out item)) {
                     item.Execute(this);
                 }
 
-                if (!newWorkItemEvent.WaitOne(WorkerThreadTimeoutMs))
+                if (!newWorkItemEvent.Wait(WorkerThreadTimeoutMs))
                     return;
 
                 newWorkItemEvent.Reset();
@@ -1461,6 +1464,56 @@ namespace Squared.Data.Mangler {
 
             if (OwnsStorage)
                 Storage.Dispose();
+        }
+    }
+    
+    public struct BatchItem<T> {
+        public TangleKey Key;
+        public T Value;
+
+        public BatchItem (TangleKey key, T value) {
+            Key = key;
+            Value = value;
+        }
+
+        public BatchItem (TangleKey key, ref T value) {
+            Key = key;
+            Value = value;
+        }
+    }
+
+    public class Batch<T> {
+        public readonly int Capacity;
+        internal readonly BatchItem<T>[] Buffer;
+        private int _Count;
+
+        public Batch (int capacity) {
+            Capacity = capacity;
+            Buffer = new BatchItem<T>[capacity];
+        }
+
+        public int Count {
+            get {
+                return _Count;
+            }
+        }
+
+        new public void Add (TangleKey key, T value) {
+            if (_Count >= Capacity)
+                throw new IndexOutOfRangeException();
+
+            Buffer[_Count++] = new BatchItem<T>(key, value);
+        }
+
+        new public void Add (TangleKey key, ref T value) {
+            if (_Count >= Capacity)
+                throw new IndexOutOfRangeException();
+
+            Buffer[_Count++] = new BatchItem<T>(key, ref value);
+        }
+
+        public Future<int> Execute (Tangle<T> tangle, bool replaceExistingItems = true) {
+            return tangle.QueueWorkItem(new Tangle<T>.BatchThunk(this, replaceExistingItems));
         }
     }
 }

@@ -20,6 +20,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using NUnit.Framework;
 using Squared.Task;
 using System.IO;
@@ -248,12 +249,12 @@ namespace Squared.Data.Mangler.Tests {
 
         protected IEnumerator<object> WriteLotsOfValuesInBatch (Tangle<int> tangle, int numIterations, int direction) {
             int batchSize = 256;
-            Tangle<int>.SetBatch batch = null;
+            Batch<int> batch = null;
 
             if (direction > 0)
                 for (int i = 0; i < numIterations; i++) {
                     if (batch == null)
-                        batch = new Tangle<int>.SetBatch(batchSize);
+                        batch = new Batch<int>(batchSize);
 
                     batch.Add(i, i);
 
@@ -265,7 +266,7 @@ namespace Squared.Data.Mangler.Tests {
             else
                 for (int i = numIterations - 1; i >= 0; i--) {
                     if (batch == null)
-                        batch = new Tangle<int>.SetBatch(batchSize);
+                        batch = new Batch<int>(batchSize);
 
                     batch.Add(i, i);
 
@@ -319,6 +320,28 @@ namespace Squared.Data.Mangler.Tests {
             Assert.AreEqual(2, Tangle.Count);
             Scheduler.WaitFor(Tangle.Set(1, 3));
             Assert.AreEqual(2, Tangle.Count);
+        }
+
+        [Test]
+        public void BarrierPreventsOperationsLaterInTheQueueFromCompleting () {
+            var barrier = Tangle.CreateBarrier();
+            var fOperation = Tangle.Add(1, 1);
+            Scheduler.WaitFor(barrier);
+            Assert.AreEqual(0, Tangle.Count);
+            barrier.Open();
+            Scheduler.WaitFor(fOperation);
+            Assert.AreEqual(1, Tangle.Count);
+        }
+
+        [Test]
+        public void DisposingOperationFutureCancelsTheOperation () {
+            var barrier1 = Tangle.CreateBarrier(false);
+            var fOperation = Tangle.Add(1, 1);
+            var barrier2 = Tangle.CreateBarrier(true);
+            fOperation.Dispose();
+            barrier1.Open();
+            Scheduler.WaitFor(barrier2);
+            Assert.AreEqual(0, Tangle.Count);
         }
     }
 
