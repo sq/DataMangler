@@ -15,10 +15,8 @@ namespace Squared.Data.Mangler.Tests {
 
         [TangleDeserializer]
         static void Deserialize (ref DeserializationContext<SpecialType> context, out SpecialType output) {
-            using (var input = context.GetStream()) {
-                var br = new BinaryReader(input);
-                output = new SpecialType(br.ReadUInt32());
-            }
+            var br = new BinaryReader(context.Stream);
+            output = new SpecialType(br.ReadUInt32());
         }
 
         [TangleSerializer]

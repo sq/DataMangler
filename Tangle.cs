@@ -647,8 +647,7 @@ namespace Squared.Data.Mangler {
 
             var context = new SerializationContext<T>(this, _SerializationBuffer);
             Serializer(ref context, ref value);
-
-            var result = new ArraySegment<byte>(_SerializationBuffer.GetBuffer(), 0, (int)_SerializationBuffer.Length);
+            var result = context.Bytes;
 
             if (_SerializationBuffer.Capacity > MaxSerializationBufferSize) {
                 _SerializationBuffer.Dispose();
@@ -1166,7 +1165,11 @@ namespace Squared.Data.Mangler {
 
             using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength)) {
                 var context = new DeserializationContext<T>(this, range.Pointer, entry.DataLength);
-                Deserializer(ref context, out value);
+                try {
+                    Deserializer(ref context, out value);
+                } finally {
+                    context.Dispose();
+                }
             }
         }
 

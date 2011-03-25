@@ -8,25 +8,52 @@ using System.Xml.Serialization;
 using Squared.Data.Mangler.Internal;
 
 namespace Squared.Data.Mangler {
+    [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = false)]
     public class TangleSerializerAttribute : Attribute {
     }
 
+    [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = false)]
     public class TangleDeserializerAttribute : Attribute {
     }
 
     public unsafe struct SerializationContext<T> {
         private readonly Tangle<T> Tangle;
+        private bool BytesProvided;
+        private ArraySegment<byte> _Bytes;
 
         public readonly MemoryStream Stream;
 
         public SerializationContext (Tangle<T> tangle, MemoryStream stream) {
             Tangle = tangle;
             Stream = stream;
+            BytesProvided = false;
+            _Bytes = default(ArraySegment<byte>);
+        }
+
+        public void SetResult (byte[] bytes) {
+            BytesProvided = true;
+            _Bytes = new ArraySegment<byte>(bytes);
+        }
+
+        public void SetResult (ArraySegment<byte> bytes) {
+            BytesProvided = true;
+            _Bytes = bytes;
+        }
+
+        internal ArraySegment<byte> Bytes {
+            get {
+                if (BytesProvided)
+                    return _Bytes;
+                else
+                    return new ArraySegment<byte>(Stream.GetBuffer(), 0, (int)Stream.Length);
+            }
         }
     }
 
     public unsafe struct DeserializationContext<T> {
         private readonly Tangle<T> Tangle;
+        private UnmanagedMemoryStream _Stream;
+
         public readonly byte * Source;
         public readonly uint SourceLength;
 
@@ -34,10 +61,21 @@ namespace Squared.Data.Mangler {
             Tangle = tangle;
             Source = source;
             SourceLength = sourceLength;
+            _Stream = null;
         }
 
-        public UnmanagedMemoryStream GetStream () {
-            return new UnmanagedMemoryStream(Source, SourceLength, SourceLength, FileAccess.Read);
+        public UnmanagedMemoryStream Stream {
+            get {
+                if (_Stream == null)
+                    _Stream = new UnmanagedMemoryStream(Source, SourceLength, SourceLength, FileAccess.Read);
+
+                return _Stream;
+            }
+        }
+
+        internal void Dispose () {
+            if (Stream != null)
+                Stream.Dispose();
         }
     }
 }
@@ -120,10 +158,8 @@ namespace Squared.Data.Mangler.Serialization {
         }
 
         public static void DeserializeFromXml (ref DeserializationContext<T> context, out T output) {
-            using (var stream = context.GetStream()) {
-                var ser = new XmlSerializer(typeof(T));
-                output = (T)ser.Deserialize(stream);
-            }
+            var ser = new XmlSerializer(typeof(T));
+            output = (T)ser.Deserialize(context.Stream);
         }
     }
 }
