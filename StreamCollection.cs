@@ -94,8 +94,13 @@ namespace Squared.Data.Mangler {
 
                 Directory.CreateDirectory(value);
 
-                foreach (var filename in Directory.GetFiles(oldFolder))
-                    File.Move(filename, Path.Combine(value, Path.GetFileName(filename)));
+                foreach (var filename in Directory.GetFiles(oldFolder)) {
+                    var newFilename = Path.Combine(value, Path.GetFileName(filename));
+                    if (File.Exists(newFilename))
+                        File.Delete(newFilename);
+
+                    File.Move(filename, newFilename);
+                }
 
                 _Folder = value;
 
