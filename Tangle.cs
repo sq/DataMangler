@@ -1497,12 +1497,15 @@ namespace Squared.Data.Mangler {
                 return;
             _IsDisposed = true;
 
-            var workItems = _WorkerThread.WorkItems;
-            _WorkerThread.Dispose();
+            if (_WorkerThread != null) {
+                var workItems = _WorkerThread.WorkItems;
+                _WorkerThread.Dispose();
+                _WorkerThread = null;
 
-            IWorkItem<T> wi;
-            while (workItems.TryDequeue(out wi))
-                wi.Dispose();
+                IWorkItem<T> wi;
+                while (workItems.TryDequeue(out wi))
+                    wi.Dispose();
+            }
 
             IndexStream.Dispose();
             DataStream.Dispose();
