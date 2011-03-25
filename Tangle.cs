@@ -397,15 +397,26 @@ namespace Squared.Data.Mangler {
 
         internal class BatchThunk : SetThunkBase<int>, IReplaceCallback {
             public Batch<T> Batch;
-            public readonly bool ShouldReplace;
+            private bool ShouldReplace;
+            private UpdateCallback Callback;
+            private DecisionUpdateCallback DecisionCallback;
 
-            public BatchThunk (Batch<T> batch, bool shouldReplace) {
+            public BatchThunk (Batch<T> batch) {
                 Batch = batch;
-                ShouldReplace = shouldReplace;
             }
 
             bool IReplaceCallback.ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue) {
-                return ShouldReplace;
+                if (Callback != null) {
+                    T oldValue;
+                    tangle.ReadData(ref indexEntry, out oldValue);
+                    newValue = Callback(oldValue);
+                    return true;
+                } else if (DecisionCallback != null) {
+                    tangle.ReadData(ref indexEntry, out newValue);
+                    return DecisionCallback(ref newValue);
+                } else {
+                    return ShouldReplace;
+                }
             }
 
             protected override void OnExecute (Tangle<T> tangle, out int result) {
@@ -413,6 +424,9 @@ namespace Squared.Data.Mangler {
 
                 var items = Batch.Buffer;
                 for (int i = 0, c = Batch.Count; i < c; i++) {
+                    ShouldReplace = items[i].AllowReplacement;
+                    Callback = items[i].Callback;
+                    DecisionCallback = items[i].DecisionCallback;
                     if (tangle.InternalSet(items[i].Key, ref items[i].Value, this))
                         result += 1;
                 }
@@ -1517,17 +1531,34 @@ namespace Squared.Data.Mangler {
     }
     
     public struct BatchItem<T> {
+        public readonly bool AllowReplacement;
+        public readonly Tangle<T>.UpdateCallback Callback;
+        public readonly Tangle<T>.DecisionUpdateCallback DecisionCallback;
         public TangleKey Key;
         public T Value;
 
-        public BatchItem (TangleKey key, T value) {
+        public BatchItem (TangleKey key, ref T value, bool allowReplacement) {
             Key = key;
             Value = value;
+            AllowReplacement = allowReplacement;
+            Callback = null;
+            DecisionCallback = null;
         }
 
-        public BatchItem (TangleKey key, ref T value) {
+        public BatchItem (TangleKey key, ref T value, Tangle<T>.UpdateCallback callback) {
             Key = key;
             Value = value;
+            AllowReplacement = false;
+            Callback = callback;
+            DecisionCallback = null;
+        }
+
+        public BatchItem (TangleKey key, ref T value, Tangle<T>.DecisionUpdateCallback callback) {
+            Key = key;
+            Value = value;
+            AllowReplacement = false;
+            Callback = null;
+            DecisionCallback = callback;
         }
     }
 
@@ -1547,22 +1578,52 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        new public void Add (TangleKey key, T value) {
+        public void Add (TangleKey key, T value) {
+            Add(key, ref value);
+        }
+
+        public void Add (TangleKey key, ref T value) {
             if (_Count >= Capacity)
                 throw new IndexOutOfRangeException();
 
-            Buffer[_Count++] = new BatchItem<T>(key, value);
+            Buffer[_Count++] = new BatchItem<T>(key, ref value, false);
         }
 
-        new public void Add (TangleKey key, ref T value) {
+        public void Set (TangleKey key, T value) {
+            Set(key, ref value);
+        }
+
+        public void Set (TangleKey key, ref T value) {
             if (_Count >= Capacity)
                 throw new IndexOutOfRangeException();
 
-            Buffer[_Count++] = new BatchItem<T>(key, ref value);
+            Buffer[_Count++] = new BatchItem<T>(key, ref value, true);
         }
 
-        public Future<int> Execute (Tangle<T> tangle, bool replaceExistingItems = true) {
-            return tangle.QueueWorkItem(new Tangle<T>.BatchThunk(this, replaceExistingItems));
+        public void AddOrUpdate (TangleKey key, T value, Tangle<T>.UpdateCallback updateCallback) {
+            AddOrUpdate(key, ref value, updateCallback);
+        }
+
+        public void AddOrUpdate (TangleKey key, ref T value, Tangle<T>.UpdateCallback updateCallback) {
+            if (_Count >= Capacity)
+                throw new IndexOutOfRangeException();
+
+            Buffer[_Count++] = new BatchItem<T>(key, ref value, updateCallback);
+        }
+
+        public void AddOrUpdate (TangleKey key, T value, Tangle<T>.DecisionUpdateCallback updateCallback) {
+            AddOrUpdate(key, ref value, updateCallback);
+        }
+
+        public void AddOrUpdate (TangleKey key, ref T value, Tangle<T>.DecisionUpdateCallback updateCallback) {
+            if (_Count >= Capacity)
+                throw new IndexOutOfRangeException();
+
+            Buffer[_Count++] = new BatchItem<T>(key, ref value, updateCallback);
+        }
+
+        public Future<int> Execute (Tangle<T> tangle) {
+            return tangle.QueueWorkItem(new Tangle<T>.BatchThunk(this));
         }
     }
 
