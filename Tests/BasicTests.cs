@@ -402,7 +402,7 @@ namespace Squared.Data.Mangler.Tests {
         public Tangle<string> Tangle;
 
         [SetUp]
-        public override void SetUp () {
+        public unsafe override void SetUp () {
             base.SetUp();
 
             var serializer = new Squared.Data.Mangler.Serialization.StringSerializer(

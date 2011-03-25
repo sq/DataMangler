@@ -628,6 +628,20 @@ namespace Squared.Data.Mangler {
                 InitializeBTree();
         }
 
+        public Tangle (
+            TaskScheduler scheduler,
+            StreamSource storage,
+            Serializer<T> serializer,
+            StreamDeserializer<T> deserializer,
+            bool ownsStorage = true
+        ) : this(
+            scheduler, storage, serializer, 
+            new StreamDeserializerAdapter<T>(deserializer).Deserialize, 
+            ownsStorage
+        ) {
+
+        }
+
         void IndexStream_LengthChanging (object sender, EventArgs e) {
             _HeaderRange.Dispose();
         }
@@ -816,7 +830,7 @@ namespace Squared.Data.Mangler {
         /// <param name="searchKeyLength">The number of bytes in the key to search for.</param>
         /// <param name="resultIndex">The index of the value within the node that matches the provided key, if any, otherwise the index of the leaf that should contain the provided key.</param>
         /// <returns>True if one of the node's values matches the provided key. False if the provided key was not found.</returns>
-        private unsafe bool SearchValues (IndexEntry * entries, ushort entryCount, byte * pSearchKey, uint searchKeyLength, out uint resultIndex) {
+        private bool SearchValues (IndexEntry * entries, ushort entryCount, byte * pSearchKey, uint searchKeyLength, out uint resultIndex) {
             int min = 0, max = entryCount - 1;
             int delta = 0, pivot;
             uint compareLength;
@@ -875,7 +889,7 @@ namespace Squared.Data.Mangler {
         /// <param name="nodeIndex">Contains the index of the BTree node where the search ended.</param>
         /// <param name="valueIndex">Contains the index of the value within the node that matched the key, if a match was found.</param>
         /// <returns>True if the key was found within the tree. False if the key was not found.</returns>
-        private unsafe bool FindKey (ref TangleKey key, out long nodeIndex, out uint valueIndex) {
+        private bool FindKey (ref TangleKey key, out long nodeIndex, out uint valueIndex) {
             long temp;
             uint temp2;
 
@@ -891,7 +905,7 @@ namespace Squared.Data.Mangler {
         /// <param name="parentNodeIndex">Contains the index of the BTree node containing the node where the search ended.</param>
         /// <param name="parentValueIndex">Contains the index of the leaf within the parent BTree node that led to the BTree node where the search ended.</param>
         /// <returns>True if the key was found within the tree. False if the key was not found.</returns>
-        private unsafe bool FindKey (ref TangleKey key, bool forInsertion, out long nodeIndex, out uint valueIndex, out long parentNodeIndex, out uint parentValueIndex) {
+        private bool FindKey (ref TangleKey key, bool forInsertion, out long nodeIndex, out uint valueIndex, out long parentNodeIndex, out uint parentValueIndex) {
             uint keyLength = (uint)key.Data.Count;
 
             long nodeCount = BTreeNodeCount;
@@ -972,7 +986,7 @@ namespace Squared.Data.Mangler {
             throw new InvalidDataException("Current node left the index");
         }
 
-        private unsafe void BTreePrepareForInsert (long nodeIndex, uint valueIndex) {
+        private void BTreePrepareForInsert (long nodeIndex, uint valueIndex) {
             ThreadCheck();
 
             using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
@@ -1018,7 +1032,7 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private unsafe void BTreeInsert (long nodeIndex, uint valueIndex, ref IndexEntry value, ref BTreeLeaf leaf) {
+        private void BTreeInsert (long nodeIndex, uint valueIndex, ref IndexEntry value, ref BTreeLeaf leaf) {
             ThreadCheck();
 
             BTreePrepareForInsert(nodeIndex, valueIndex);
@@ -1038,7 +1052,7 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private unsafe void BTreeSplitLeafNode (long parentNodeIndex, uint leafValueIndex, long leafNodeIndex) {
+        private void BTreeSplitLeafNode (long parentNodeIndex, uint leafValueIndex, long leafNodeIndex) {
             ThreadCheck();
 
             long newIndex = CreateBTreeNode();
@@ -1085,18 +1099,18 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private unsafe long CreateBTreeNode () {
+        private long CreateBTreeNode () {
             long offset = IndexStream.AllocateSpace(BTreeNode.TotalSize);
             var newIndex = (offset - BTreeHeader.Size) / BTreeNode.TotalSize;
 
             return newIndex;
         }
 
-        private unsafe long CreateBTreeRoot () {
+        private long CreateBTreeRoot () {
             return CreateBTreeRoot(BTreeRootIndex);
         }
 
-        private unsafe long CreateBTreeRoot (long oldRootIndex) {
+        private long CreateBTreeRoot (long oldRootIndex) {
             var newIndex = CreateBTreeNode();
 
             using (var range = AccessBTreeNode(newIndex, MemoryMappedFileAccess.Write)) {
@@ -1115,17 +1129,17 @@ namespace Squared.Data.Mangler {
             return newIndex;
         }
 
-        private unsafe StreamRange AccessHeader (MemoryMappedFileAccess access) {
+        private StreamRange AccessHeader (MemoryMappedFileAccess access) {
             return IndexStream.AccessRange(0, BTreeHeader.Size, access);
         }
 
-        private unsafe void InitializeBTree () {
+        private void InitializeBTree () {
             IndexStream.AllocateSpace(BTreeHeader.Size);
 
             CreateBTreeRoot();
         }
 
-        private unsafe long BTreeRootIndex {
+        private long BTreeRootIndex {
             get {
                 var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
                 return pHeader->RootIndex;
@@ -1138,14 +1152,14 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        public unsafe long Count {
+        public long Count {
             get {
                 var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
                 return pHeader->ItemCount;
             }
         }
 
-        public unsafe long WastedDataBytes {
+        public long WastedDataBytes {
             get {
                 var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
                 return pHeader->WastedDataBytes;
@@ -1164,8 +1178,7 @@ namespace Squared.Data.Mangler {
                 throw new InvalidDataException();
 
             using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength))
-            using (var ms = new UnmanagedMemoryStream(range.Pointer, entry.DataLength, entry.DataLength, FileAccess.Read))
-                Deserializer(ms, out value);
+                Deserializer(range.Pointer, entry.DataLength, out value);
         }
 
         private static void ReadBytes (byte * ptr, long offset, byte[] buffer, long bufferOffset, uint count) {
@@ -1186,7 +1199,7 @@ namespace Squared.Data.Mangler {
             Native.memset(ptr + offset, 0, new UIntPtr((uint)count));
         }
 
-        private unsafe void InternalSetFoundValue (long nodeIndex, uint valueIndex, ref T value) {
+        private void InternalSetFoundValue (long nodeIndex, uint valueIndex, ref T value) {
             ThreadCheck();
 
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Write)) {
@@ -1213,7 +1226,7 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private unsafe void WriteKey (ref IndexEntry indexEntry, ref TangleKey key) {
+        private void WriteKey (ref IndexEntry indexEntry, ref TangleKey key) {
             var prefixSize = Math.Min(key.Data.Count, IndexEntry.KeyPrefixSize);
 
             fixed (byte* pPrefix = indexEntry.KeyPrefix)
@@ -1231,7 +1244,7 @@ namespace Squared.Data.Mangler {
         //  The IndexEntry's IsValid must be 0.
         // newOffset must specify the offset within the data stream where the data is to be written.
         //  In most cases this should be equal to DataOffset, but in the case of AppendData it will be different.
-        private unsafe void WriteData (ref IndexEntry indexEntry, ref ArraySegment<byte> data, WriteModes writeMode, long? dataOffset) {
+        private void WriteData (ref IndexEntry indexEntry, ref ArraySegment<byte> data, WriteModes writeMode, long? dataOffset) {
             if (indexEntry.KeyType != 0)
                 throw new InvalidDataException();
             if (writeMode == WriteModes.Invalid)
@@ -1271,7 +1284,7 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private unsafe bool InternalSet (TangleKey key, ref T value, IReplaceCallback replacementCallback) {
+        private bool InternalSet (TangleKey key, ref T value, IReplaceCallback replacementCallback) {
             ThreadCheck();
 
             long keyOffset = 0;
@@ -1365,7 +1378,7 @@ namespace Squared.Data.Mangler {
         }
 
         /*
-        private unsafe TangleKey GetKeyFromIndex (long index) {
+        private TangleKey GetKeyFromIndex (long index) {
             using (var indexRange = AccessIndex(index, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry *)indexRange.Pointer;
                 if (pEntry->KeyType == 0)
@@ -1383,19 +1396,19 @@ namespace Squared.Data.Mangler {
         }
          */
 
-        private unsafe uint GetNodeValueCount (long nodeIndex) {
+        private uint GetNodeValueCount (long nodeIndex) {
             using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.Read)) {
                 var pNode = (BTreeNode *)range.Pointer;
                 return pNode->NumValues;
             }
         }
 
-        private unsafe string StringifyNode (long nodeIndex) {
+        private string StringifyNode (long nodeIndex) {
             using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.Read))
                 return StringifyNode((BTreeNode *)range.Pointer);
         }
 
-        private unsafe string StringifyNode (BTreeNode * pNode) {
+        private string StringifyNode (BTreeNode * pNode) {
             var sb = new StringBuilder();
             var pValues = (IndexEntry *)(((byte *)pNode) + BTreeNode.OffsetOfValues);
             var pLeaves = (BTreeLeaf *)(((byte *)pNode) + BTreeNode.OffsetOfLeaves);
@@ -1417,7 +1430,7 @@ namespace Squared.Data.Mangler {
             return StringifyNode(BTreeRootIndex);
         }
 
-        private unsafe TangleKey GetKeyOfEntry (IndexEntry* pEntry) {
+        private TangleKey GetKeyOfEntry (IndexEntry* pEntry) {
             byte[] buffer = new byte[pEntry->KeyLength];
             if (pEntry->KeyLength <= IndexEntry.KeyPrefixSize) {
                 fixed (byte * pBuffer = buffer)
@@ -1431,7 +1444,7 @@ namespace Squared.Data.Mangler {
             return new TangleKey(buffer, pEntry->KeyType);
         }
 
-        private unsafe TangleKey GetKeyOfNodeValue (long nodeIndex, uint valueIndex) {
+        private TangleKey GetKeyOfNodeValue (long nodeIndex, uint valueIndex) {
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry *)range.Pointer;
 
@@ -1488,7 +1501,7 @@ namespace Squared.Data.Mangler {
             return true;
         }
 
-        private unsafe void InternalGetFoundValue (long nodeIndex, uint valueIndex, out T result) {
+        private void InternalGetFoundValue (long nodeIndex, uint valueIndex, out T result) {
             ThreadCheck();
 
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {

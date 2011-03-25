@@ -21,7 +21,11 @@ namespace Squared.Data.Mangler.Serialization {
     /// <summary>
     /// Handles converting a single stored value from raw binary back into its native format, when the Tangle is loading it from storage.
     /// </summary>
-    public delegate void Deserializer<T> (Stream input, out T output);
+    public unsafe delegate void Deserializer<T> (byte * input, uint inputLength, out T output);
+    /// <summary>
+    /// Handles converting a single stored value from raw binary back into its native format, when the Tangle is loading it from storage.
+    /// </summary>
+    public delegate void StreamDeserializer<T> (Stream input, out T output);
 
     public class StringSerializer {
         public readonly Encoding Encoding;
@@ -35,18 +39,29 @@ namespace Squared.Data.Mangler.Serialization {
             output.Write(bytes, 0, bytes.Length);
         }
 
-        public void Deserialize (Stream input, out string output) {
-            var bytes = new byte[input.Length];
-            input.Read(bytes, 0, bytes.Length);
-            output = Encoding.GetString(bytes);
+        public unsafe void Deserialize (byte * input, uint inputLength, out string output) {
+            output = new String((sbyte *)input, 0, (int)inputLength, Encoding);
+        }
+    }
+
+    class StreamDeserializerAdapter<T> {
+        public readonly StreamDeserializer<T> Deserializer;
+
+        public StreamDeserializerAdapter (StreamDeserializer<T> deserializer) {
+            Deserializer = deserializer;
+        }
+
+        public unsafe void Deserialize (byte * input, uint inputLength, out T output) {
+            using (var stream = new UnmanagedMemoryStream(input, inputLength, inputLength, FileAccess.Read))
+                Deserializer(stream, out output);
         }
     }
 
     public static class Defaults<T> {
         public static Serializer<T> Serializer = SerializeToXml;
-        public static Deserializer<T> Deserializer = DeserializeFromXml;
+        public unsafe static Deserializer<T> Deserializer = DeserializeFromXml;
 
-        static Defaults () {
+        unsafe static Defaults () {
             var t = typeof(T);
             var tsa = typeof(TangleSerializerAttribute);
             var tda = typeof(TangleDeserializerAttribute);
@@ -60,8 +75,18 @@ namespace Squared.Data.Mangler.Serialization {
                     Serializer = (Serializer<T>)(Delegate.CreateDelegate(typeof(Serializer<T>), method, true)) ?? Serializer;
 
                 sa = method.GetCustomAttributes(tda, true);
-                if (sa.Length == 1)
-                    Deserializer = (Deserializer<T>)(Delegate.CreateDelegate(typeof(Deserializer<T>), method, true)) ?? Deserializer;
+                if (sa.Length == 1) {
+                    var native = (Deserializer<T>)(Delegate.CreateDelegate(typeof(Deserializer<T>), method, false));
+                    if (native != null)
+                        Deserializer = native;
+                    else {
+                        var streamBased = (StreamDeserializer<T>)(Delegate.CreateDelegate(typeof(StreamDeserializer<T>), method, true));
+                        if (streamBased != null) {
+                            var adapter = new StreamDeserializerAdapter<T>(streamBased);
+                            Deserializer = adapter.Deserialize;
+                        }
+                    }
+                }
             }
         }
 
@@ -70,9 +95,11 @@ namespace Squared.Data.Mangler.Serialization {
             ser.Serialize(output, input);
         }
 
-        public static void DeserializeFromXml (Stream input, out T output) {
-            var ser = new XmlSerializer(typeof(T));
-            output = (T)ser.Deserialize(input);
+        public unsafe static void DeserializeFromXml (byte * input, uint inputLength, out T output) {
+            using (var stream = new UnmanagedMemoryStream(input, inputLength, inputLength, FileAccess.Read)) {
+                var ser = new XmlSerializer(typeof(T));
+                output = (T)ser.Deserialize(stream);
+            }
         }
     }
 }
