@@ -798,25 +798,11 @@ namespace Squared.Data.Mangler {
         }
 
         private StreamRange AccessBTreeNode (long index, MemoryMappedFileAccess access) {
-            long count = BTreeNodeCount;
-
-            if ((index < 0) || (index >= count))
-                throw new ArgumentException(String.Format(
-                    "Expected 0 <= index < {0}, but index was {1}", count, index
-                ), "index");
-
             long position = BTreeHeader.Size + (index * BTreeNode.TotalSize);
             return IndexStream.AccessRange(position, BTreeNode.TotalSize, access);
         }
 
         private StreamRange AccessBTreeValue (long nodeIndex, uint valueIndex, MemoryMappedFileAccess access) {
-            long count = BTreeNodeCount;
-
-            if ((nodeIndex < 0) || (nodeIndex >= count))
-                throw new ArgumentException(String.Format(
-                    "Expected 0 <= index < {0}, but index was {1}", count, nodeIndex
-                ), "index");
-
             long position = BTreeHeader.Size + ((nodeIndex * BTreeNode.TotalSize) + BTreeNode.OffsetOfValues + (valueIndex * IndexEntry.Size));
             return IndexStream.AccessRange(position, IndexEntry.Size, access);
         }
@@ -909,7 +895,8 @@ namespace Squared.Data.Mangler {
             uint keyLength = (uint)key.Data.Count;
 
             long nodeCount = BTreeNodeCount;
-            parentNodeIndex = BTreeRootIndex;
+            long rootIndex = BTreeRootIndex;
+            parentNodeIndex = rootIndex;
             parentValueIndex = 0;
             long currentNode = parentNodeIndex;
 
@@ -944,8 +931,8 @@ namespace Squared.Data.Mangler {
                         BTreeSplitLeafNode(newRootIndex, 0, currentNode);
 
                         // Restart at the root
-                        nodeCount = BTreeNodeCount;
-                        currentNode = parentNodeIndex = BTreeRootIndex;
+                        nodeCount += 2;
+                        currentNode = parentNodeIndex = rootIndex = newRootIndex;
                         parentValueIndex = 0;
                         continue;
                     } else {
@@ -953,8 +940,8 @@ namespace Squared.Data.Mangler {
                         BTreeSplitLeafNode(parentNodeIndex, parentValueIndex, currentNode);
 
                         // Restart at the root
-                        nodeCount = BTreeNodeCount;
-                        currentNode = parentNodeIndex = BTreeRootIndex;
+                        nodeCount += 1;
+                        currentNode = parentNodeIndex = rootIndex;
                         parentValueIndex = 0;
                         continue;
                     }

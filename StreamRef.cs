@@ -83,18 +83,16 @@ namespace Squared.Data.Mangler.Internal {
             View = null;
             Offset = offset;
             Size = size;
-            Buffer = viewRef.View.GetSafeBuffer();
-            Pointer = null;
-            Buffer.AcquirePointer(ref Pointer);
-            Pointer += viewRef.View.GetPointerOffset();
+            Buffer = viewRef.Buffer;
+            Pointer = viewRef.Pointer + viewRef.PointerOffset;
             Pointer += (offset - viewRef.Offset);
         }
 
         public void Dispose () {
-            Buffer.ReleasePointer();
-            if (View != null)
+            if (View != null) {
+                Buffer.ReleasePointer();
                 View.Dispose();
-            else
+            } else
                 ViewRef.Dispose();
         }
     }
@@ -159,26 +157,22 @@ namespace Squared.Data.Mangler.Internal {
     }
 
     internal class ViewCache : IDisposable {
-        public struct Ref : IDisposable {
+        public unsafe struct Ref : IDisposable {
             public readonly MemoryMappedViewAccessor View;
+            public readonly SafeBuffer Buffer;
+            public readonly byte * Pointer;
+            public readonly long PointerOffset;
+            public readonly long Offset;
             private readonly CacheEntry Entry;
             
             public Ref (CacheEntry entry) {
                 Entry = entry;
                 View = Entry.View;
+                Buffer = Entry.Buffer;
+                Pointer = Entry.Pointer;
+                PointerOffset = Entry.PointerOffset;
+                Offset = Entry.Offset;
                 Entry.AddRef();
-            }
-
-            public long Offset {
-                get {
-                    return Entry.Offset;
-                }
-            }
-
-            public uint Size {
-                get {
-                    return Entry.Size;
-                }
             }
 
             public void Dispose () {
@@ -186,7 +180,10 @@ namespace Squared.Data.Mangler.Internal {
             }
         }
 
-        public class CacheEntry : IDisposable {
+        public unsafe class CacheEntry : IDisposable {
+            public readonly SafeBuffer Buffer;
+            public readonly byte* Pointer;
+            public readonly long PointerOffset;
             public readonly long Offset;
             public readonly uint Size;
             public readonly MemoryMappedViewAccessor View;
@@ -197,6 +194,10 @@ namespace Squared.Data.Mangler.Internal {
                 Offset = offset;
                 Size = size;
                 RefCount = 1;
+                Buffer = view.GetSafeBuffer();
+                Pointer = null;
+                Buffer.AcquirePointer(ref Pointer);
+                PointerOffset = view.GetPointerOffset();
             }
 
             public void AddRef () {
@@ -210,6 +211,7 @@ namespace Squared.Data.Mangler.Internal {
             }
 
             public void Dispose () {
+                Buffer.ReleasePointer();
                 View.Dispose();
             }
         }
@@ -279,8 +281,8 @@ namespace Squared.Data.Mangler.Internal {
 
     internal class StreamRef : IDisposable {
         public static readonly uint HeaderSize = (uint)Marshal.SizeOf(typeof(StreamHeader));
-        public const uint InitialSize = 64 * 1024;
-        public const uint DoublingThreshold = 1024 * 1024 * 32;
+        public const uint InitialSize = 256 * 1024;
+        public const uint DoublingThreshold = 1024 * 1024 * 64;
         public const uint PostDoublingGrowthRate = 1024 * 1024 * 8;
 
         public event EventHandler LengthChanging, LengthChanged;
