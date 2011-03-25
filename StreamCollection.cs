@@ -93,12 +93,12 @@ namespace Squared.Data.Mangler {
 
                 var oldFolder = _Folder;
 
+                Dispose();
+
                 Directory.CreateDirectory(value);
-                foreach (var kvp in Streams) {
-                    var oldPath = GetPath(oldFolder, kvp.Key);
-                    var newPath = GetPath(value, kvp.Key);
-                    File.Move(oldPath, newPath);
-                }
+
+                foreach (var filename in Directory.GetFiles(oldFolder))
+                    File.Move(filename, Path.Combine(value, Path.GetFileName(filename)));
 
                 _Folder = value;
 

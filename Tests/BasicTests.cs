@@ -307,6 +307,19 @@ namespace Squared.Data.Mangler.Tests {
                 Assert.AreEqual(i, f.Result);
             }
         }
+
+        [Test]
+        public void TestCount () {
+            Assert.AreEqual(0, Tangle.Count);
+            Scheduler.WaitFor(Tangle.Add(1, 1));
+            Assert.AreEqual(1, Tangle.Count);
+            Scheduler.WaitFor(Tangle.Add(2, 2));
+            Assert.AreEqual(2, Tangle.Count);
+            Scheduler.WaitFor(Tangle.Add(2, 2));
+            Assert.AreEqual(2, Tangle.Count);
+            Scheduler.WaitFor(Tangle.Set(1, 3));
+            Assert.AreEqual(2, Tangle.Count);
+        }
     }
 
     [TestFixture]
