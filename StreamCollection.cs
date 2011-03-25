@@ -14,9 +14,6 @@ namespace Squared.Data.Mangler {
     public abstract class CachingStreamSourceBase : StreamSource {
         protected readonly Dictionary<string, FileStream> Streams = new Dictionary<string, FileStream>();
 
-        protected CachingStreamSourceBase () {
-        }
-
         override internal Internal.StreamRef Open (string streamName) {
             FileStream result;
 

@@ -405,9 +405,9 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set(1, "abcdefgh"));
             Assert.AreEqual(4, Tangle.WastedDataBytes);
             Scheduler.WaitFor(Tangle.Set(1, "abc"));
-            Assert.AreEqual(9, Tangle.WastedDataBytes);
+            Assert.AreEqual(4, Tangle.WastedDataBytes);
             Scheduler.WaitFor(Tangle.Set(1, "abcdefgh"));
-            Assert.AreEqual(12, Tangle.WastedDataBytes);
+            Assert.AreEqual(4, Tangle.WastedDataBytes);
         }
     }
 }

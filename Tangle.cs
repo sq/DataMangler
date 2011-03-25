@@ -95,6 +95,7 @@ namespace Squared.Data.Mangler.Internal {
 
         public uint DataOffset;
         public uint DataLength;
+        public uint ExtraDataBytes;
         public uint KeyOffset;
         public ushort KeyLength;
         public ushort KeyType;
@@ -1079,7 +1080,8 @@ namespace Squared.Data.Mangler {
         }
 
         private unsafe void InitializeBTree () {
-            long headerOffset = IndexStream.AllocateSpace(BTreeHeader.Size);
+            IndexStream.AllocateSpace(BTreeHeader.Size);
+
             CreateBTreeRoot();
         }
 
@@ -1154,7 +1156,7 @@ namespace Squared.Data.Mangler {
                 uint count = (uint)segment.Count;
 
                 long dataOffset = pEntry->DataOffset;
-                WriteModes writeMode = (segment.Count > pEntry->DataLength) ?
+                WriteModes writeMode = (segment.Count > pEntry->DataLength + pEntry->ExtraDataBytes) ?
                     WriteModes.AppendData : WriteModes.ReplaceData;
 
                 if (writeMode == WriteModes.AppendData)
@@ -1202,27 +1204,28 @@ namespace Squared.Data.Mangler {
                 using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write))
                     ZeroBytes(range.Pointer, 0, indexEntry.DataLength);
 
-                Interlocked.Add(ref pHeader->WastedDataBytes, indexEntry.DataLength);
+                Interlocked.Add(ref pHeader->WastedDataBytes, indexEntry.DataLength + indexEntry.ExtraDataBytes);
 
                 indexEntry.DataOffset = (uint)dataOffset.Value;
                 indexEntry.DataLength = count;
+                indexEntry.ExtraDataBytes = 0;
             } else if (writeMode != WriteModes.ReplaceData) {
                 if (dataOffset.HasValue)
                     indexEntry.DataOffset = (uint)dataOffset.Value;
 
                 indexEntry.DataLength = count;
-            } else {
-                Interlocked.Add(ref pHeader->WastedDataBytes, indexEntry.DataLength - count);
+                indexEntry.ExtraDataBytes = 0;
             }
 
-            using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength, MemoryMappedFileAccess.Write)) {
+            using (var range = DataStream.AccessRange(indexEntry.DataOffset, indexEntry.DataLength + indexEntry.ExtraDataBytes, MemoryMappedFileAccess.Write)) {
                 WriteBytes(range.Pointer, 0, data);
 
                 if (writeMode == WriteModes.ReplaceData) {
-                    var bytesToZero = indexEntry.DataLength - count;
+                    var bytesToZero = (indexEntry.DataLength + indexEntry.ExtraDataBytes) - count;
                     if (bytesToZero > 0)
                         ZeroBytes(range.Pointer, count, bytesToZero);
 
+                    indexEntry.ExtraDataBytes += bytesToZero;
                     indexEntry.DataLength = count;
                 }
             }
@@ -1230,8 +1233,6 @@ namespace Squared.Data.Mangler {
 
         private unsafe bool InternalSet (TangleKey key, ref T value, IReplaceCallback replacementCallback) {
             ThreadCheck();
-
-            WriteModes writeMode = WriteModes.Invalid;
 
             long keyOffset = 0;
             long? dataOffset = null;
@@ -1263,8 +1264,9 @@ namespace Squared.Data.Mangler {
 
                 var segment = Serialize(ref value);
 
+                WriteModes writeMode;
                 if (foundExisting) {
-                    if (segment.Count > pEntry->DataLength)
+                    if (segment.Count > pEntry->DataLength + pEntry->ExtraDataBytes)
                         writeMode = WriteModes.AppendData;
                     else
                         writeMode = WriteModes.ReplaceData;
@@ -1286,6 +1288,7 @@ namespace Squared.Data.Mangler {
                         KeyOffset = (uint)keyOffset,
                         DataLength = (uint)segment.Count,
                         KeyLength = (ushort)key.Data.Count,
+                        ExtraDataBytes = 0,
                         KeyType = 0
                     };
 
@@ -1448,36 +1451,6 @@ namespace Squared.Data.Mangler {
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry*)range.Pointer;
                 ReadData(ref *pEntry, out result);
-            }
-        }
-
-        /// <summary>
-        /// Exports the contents of each of the database's streams to a folder, for easier debugging.
-        /// </summary>
-        public void ExportStreams (string destinationFolder) {
-            if (!Directory.Exists(destinationFolder))
-                Directory.CreateDirectory(destinationFolder);
-
-            ExportStream(IndexStream, Path.Combine(destinationFolder, "index"));
-            ExportStream(KeyStream, Path.Combine(destinationFolder, "keys"));
-            ExportStream(DataStream, Path.Combine(destinationFolder, "data"));
-        }
-
-        private void ExportStream (StreamRef stream, string file) {
-            if (File.Exists(file))
-                File.Delete(file);
-            using (var fs = File.OpenWrite(file)) {
-                var headerBuf = new byte[StreamRef.HeaderSize];
-                using (var access = stream.AccessHeader())
-                    Marshal.Copy(new IntPtr(access.Ptr), headerBuf, 0, (int)StreamRef.HeaderSize);
-                fs.Write(headerBuf, 0, (int)StreamRef.HeaderSize);
-
-                var size = (int)stream.Length;
-                var buffer = new byte[size];
-                using (var access = stream.AccessRange(0, (uint)size, MemoryMappedFileAccess.Read))
-                    ReadBytes(access.Pointer, 0, buffer, 0, (uint)size);
-
-                fs.Write(buffer, 0, size);
             }
         }
 

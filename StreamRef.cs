@@ -371,7 +371,7 @@ namespace Squared.Data.Mangler.Internal {
             using (var header = AccessHeader()) {
                 newSize = Interlocked.Add(ref header.Ptr->DataLength, size);
                 oldSize = newSize - size;
-            };
+            }
 
             EnsureCapacity(newSize + HeaderSize);
             return oldSize;
