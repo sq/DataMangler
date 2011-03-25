@@ -44,10 +44,21 @@ namespace Squared.Data.Mangler.Serialization {
         }
     }
 
+    public static class StreamDeserializerAdapter {
+        public unsafe static Deserializer<T> Get<T> (StreamDeserializer<T> deserializer) {
+            if (deserializer == null)
+                return null;
+
+            return new StreamDeserializerAdapter<T>(deserializer).Deserialize;
+        }
+    }
+
     class StreamDeserializerAdapter<T> {
         public readonly StreamDeserializer<T> Deserializer;
 
         public StreamDeserializerAdapter (StreamDeserializer<T> deserializer) {
+            if (deserializer == null)
+                throw new ArgumentNullException("deserializer");
             Deserializer = deserializer;
         }
 

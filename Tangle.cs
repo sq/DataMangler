@@ -636,7 +636,7 @@ namespace Squared.Data.Mangler {
             bool ownsStorage = true
         ) : this(
             scheduler, storage, serializer, 
-            new StreamDeserializerAdapter<T>(deserializer).Deserialize, 
+            StreamDeserializerAdapter.Get(deserializer),
             ownsStorage
         ) {
 

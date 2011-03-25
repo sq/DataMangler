@@ -484,5 +484,12 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set(1, "abcdefgh"));
             Assert.AreEqual(4, Tangle.WastedDataBytes);
         }
+
+        [Test]
+        public void TestStoringHugeValue () {
+            var hugeString = new String('a', 1024 * 1024 * 32);
+            Scheduler.WaitFor(Tangle.Set(1, hugeString));
+            Assert.AreEqual(hugeString, Scheduler.WaitFor(Tangle.Get(1)));
+        }
     }
 }

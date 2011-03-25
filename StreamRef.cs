@@ -17,6 +17,7 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 */
 
 using System;
+using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
 using System.Threading;
 using System.Runtime.InteropServices;
@@ -98,13 +99,13 @@ namespace Squared.Data.Mangler.Internal {
     }
 
     [Flags]
-    internal enum NativeFileAccess : uint {
+    public enum NativeFileAccess : uint {
         GenericRead = 0x80000000,
         GenericWrite = 0x40000000
     }
 
     [Flags]
-    internal enum NativeFileFlags : uint {
+    public enum NativeFileFlags : uint {
         WriteThrough = 0x80000000,
         Overlapped = 0x40000000,
         NoBuffering = 0x20000000,
@@ -117,7 +118,7 @@ namespace Squared.Data.Mangler.Internal {
         OpenNoRecall = 0x100000
     }
 
-    internal static class Native {
+    public static class Native {
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         public static extern SafeFileHandle CreateFile (
             string filename,
@@ -332,9 +333,14 @@ namespace Squared.Data.Mangler.Internal {
             // We grow the stream by a fixed amount every time we run out
             //  of space. Doubling or some other algorithm might be better,
             //  but this is simple and predictable.
-            var newCapacity = StreamCapacity * 2;
-            if (newCapacity >= DoublingThreshold)
-                newCapacity = StreamCapacity + PostDoublingGrowthRate;
+            long newCapacity = StreamCapacity;
+            if (StreamCapacity >= DoublingThreshold) {
+                while (newCapacity < capacity)
+                    newCapacity += PostDoublingGrowthRate;
+            } else {
+                while (newCapacity < capacity)
+                    newCapacity *= 2;
+            }
 
             if (LengthChanging != null)
                 LengthChanging(this, EventArgs.Empty);
