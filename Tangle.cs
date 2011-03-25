@@ -980,10 +980,10 @@ namespace Squared.Data.Mangler {
 
                 pLeaf->NumValues = (ushort)tMinus1;
 
-                Native.memmove((byte *)pNewValues, (byte *)&pLeafValues[BTreeNode.T], new UIntPtr(BTreeNode.T * IndexEntry.Size));
+                Native.memmove((byte *)pNewValues, (byte *)&pLeafValues[BTreeNode.T], new UIntPtr((BTreeNode.T - 1) * IndexEntry.Size));
 
                 if (pLeaf->HasLeaves == 1)
-                    Native.memmove((byte*)pNewLeaves, (byte*)&pLeafLeaves[BTreeNode.T], new UIntPtr((BTreeNode.T + 1) * BTreeLeaf.Size));
+                    Native.memmove((byte*)pNewLeaves, (byte*)&pLeafLeaves[BTreeNode.T], new UIntPtr(BTreeNode.T * BTreeLeaf.Size));
 
                 pNew->IsValid = 1;
                 pLeaf->IsValid = 1;
@@ -1173,12 +1173,14 @@ namespace Squared.Data.Mangler {
                 var pEntry = (IndexEntry*)range.Pointer;
 
                 if (foundExisting) {
-                    bool shouldContinue = replacementCallback.ShouldReplace(this, ref *pEntry, ref value);
-                    if (!shouldContinue)
-                        return false;
-
                     if (pEntry->KeyType != key.OriginalTypeId)
                         throw new InvalidDataException();
+
+                    bool shouldContinue = replacementCallback.ShouldReplace(this, ref *pEntry, ref value);
+                    if (!shouldContinue) {
+                        return false;
+                    }
+
                     pEntry->KeyType = 0;
                 }
 
