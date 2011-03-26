@@ -317,6 +317,34 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set(1, 3));
             Assert.AreEqual(2, Tangle.Count);
         }
+
+        [Test]
+        public void TestMultiGet () {
+            const int numValues = 50000;
+
+            Scheduler.WaitFor(WriteLotsOfValuesInBatch(Tangle, numValues, -1));
+
+            var keys = new List<TangleKey>();
+            for (int i = 0; i < numValues; i += 2)
+                keys.Add(new TangleKey(i));
+
+            var fMultiGet = Tangle.Get(keys);
+            var results = Scheduler.WaitFor(fMultiGet);
+
+            Assert.AreEqual(keys.Count, results.Count());
+
+            Assert.AreEqual(
+                keys.OrderBy((k) => (int)k.Value)
+                    .Select((k) => (int)k.Value)
+                    .ToArray(), 
+                results.OrderBy((kvp) => (int)kvp.Key.Value)
+                    .Select((kvp) => (int)kvp.Key.Value)
+                    .ToArray()
+            );
+
+            foreach (var kvp in results)
+                Assert.AreEqual((int)kvp.Key.Value, kvp.Value);
+        }
     }
 
     [TestFixture]

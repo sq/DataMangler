@@ -266,6 +266,39 @@ namespace Squared.Data.Mangler {
             }
         }
 
+        private class GetMultipleThunk : ThunkBase<IEnumerable<KeyValuePair<TangleKey, T>>> {
+            public readonly IEnumerable<TangleKey> Keys;
+
+            public GetMultipleThunk (IEnumerable<TangleKey> keys) {
+                Keys = keys;
+            }
+
+            protected static int? GetCountFast (IEnumerable<TangleKey> keys) {
+                TangleKey[] array = keys as TangleKey[];
+                ICollection<TangleKey> collection = keys as ICollection<TangleKey>;
+
+                if (array != null)
+                    return array.Length;
+                else if (collection != null)
+                    return collection.Count;
+                else
+                    return null;
+            }
+
+            protected override void OnExecute (Tangle<T> tangle, out IEnumerable<KeyValuePair<TangleKey, T>> result) {
+                int capacity = GetCountFast(Keys).GetValueOrDefault(256);                
+                var list = new List<KeyValuePair<TangleKey, T>>(capacity);
+
+                foreach (var key in Keys) {
+                    T value;
+                    if (tangle.InternalGet(key, out value))
+                        list.Add(new KeyValuePair<TangleKey, T>(key, value));
+                }
+
+                result = list;
+            }
+        }
+
         private class FindThunk : ThunkBase<FindResult> {
             public readonly TangleKey Key;
 
@@ -495,6 +528,15 @@ namespace Squared.Data.Mangler {
         /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
         public Future<T> Get (TangleKey key) {
             return QueueWorkItem(new GetThunk(ref key));
+        }
+
+        /// <summary>
+        /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys.
+        /// </summary>
+        /// <returns>A future that will contain the retrieved values.</returns>
+        /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
+        public Future<IEnumerable<KeyValuePair<TangleKey, T>>> Get (IEnumerable<TangleKey> keys) {
+            return QueueWorkItem(new GetMultipleThunk(keys));
         }
 
         protected Future<T> GetValueByIndex (long nodeIndex, uint valueIndex) {
