@@ -1254,16 +1254,18 @@ namespace Squared.Data.Mangler {
         }
 
         private TangleKey GetKeyOfEntry (IndexEntry* pEntry) {
-            byte[] buffer = new byte[pEntry->KeyLength];
+            var buffer = ImmutableArrayPool<byte>.Allocate(pEntry->KeyLength);
+
             if (pEntry->KeyLength <= IndexEntry.KeyPrefixSize) {
-                fixed (byte * pBuffer = buffer)
-                    Native.memmove(pBuffer, pEntry->KeyPrefix, new UIntPtr(pEntry->KeyLength));
+                fixed (byte * pBuffer = buffer.Array)
+                    Native.memmove(pBuffer + buffer.Offset, pEntry->KeyPrefix, new UIntPtr(pEntry->KeyLength));
             } else {
                 using (var keyRange = KeyStream.AccessRange(
                     pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
                 ))
-                    ReadBytes(keyRange.Pointer, 0, buffer, 0, pEntry->KeyLength);
+                    ReadBytes(keyRange.Pointer, 0, buffer.Array, buffer.Offset, pEntry->KeyLength);
             }
+
             return new TangleKey(buffer, pEntry->KeyType);
         }
 

@@ -22,6 +22,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.IO;
+using System.Threading;
 using System.Xml.Serialization;
 using Squared.Data.Mangler.Internal;
 using Squared.Data.Mangler.Serialization;
@@ -147,6 +148,94 @@ namespace Squared.Data.Mangler {
                 _Stream.Dispose();
         }
     }
+
+    public static class ImmutableBufferPool {
+        public unsafe static ArraySegment<byte> GetBytes (int value) {
+            var result = ImmutableArrayPool<byte>.Allocate(4);
+
+            fixed (byte * pBuffer = result.Array)
+                *(int *)(pBuffer + result.Offset) = value;
+
+            return result;
+        }
+
+        public unsafe static ArraySegment<byte> GetBytes (uint value) {
+            var result = ImmutableArrayPool<byte>.Allocate(4);
+
+            fixed (byte * pBuffer = result.Array)
+                *(uint *)(pBuffer + result.Offset) = value;
+
+            return result;
+        }
+
+        public unsafe static ArraySegment<byte> GetBytes (long value) {
+            var result = ImmutableArrayPool<byte>.Allocate(8);
+
+            fixed (byte * pBuffer = result.Array)
+                *(long *)(pBuffer + result.Offset) = value;
+
+            return result;
+        }
+
+        public unsafe static ArraySegment<byte> GetBytes (ulong value) {
+            var result = ImmutableArrayPool<byte>.Allocate(8);
+
+            fixed (byte * pBuffer = result.Array)
+                *(ulong *)(pBuffer + result.Offset) = value;
+
+            return result;
+        }
+
+        public static ArraySegment<byte> GetBytes (string value, Encoding encoding) {
+            var length = encoding.GetByteCount(value);
+            var result = ImmutableArrayPool<byte>.Allocate(length);
+
+            encoding.GetBytes(value, 0, value.Length, result.Array, result.Offset);
+
+            return result;
+        }
+    }
+
+    public static class ImmutableArrayPool<T> {
+        private class State {
+            public readonly T[] Buffer;
+            public int ElementsUsed;
+
+            public State (T[] buffer) {
+                Buffer = buffer;
+                ElementsUsed = 0;
+            }
+        }
+
+        public const int MaxSizeBytes = 64 * 1024;
+
+        public static readonly int Capacity;
+
+        [ThreadStatic]
+        private static State Data;
+
+        static ImmutableArrayPool () {
+            var itemSize = Marshal.SizeOf(typeof(T));
+            Capacity = MaxSizeBytes / itemSize;
+        }
+
+        static void AllocateNewBuffer () {
+            Data = new State(new T[Capacity]);
+        }
+
+        public static ArraySegment<T> Allocate (int count) {
+            if (count > Capacity)
+                return new ArraySegment<T>(new T[count], 0, count);
+
+            if ((Data == null) || (Data.ElementsUsed >= Capacity - count))
+                AllocateNewBuffer();
+
+            var offset = Data.ElementsUsed;
+            Data.ElementsUsed += count;
+
+            return new ArraySegment<T>(Data.Buffer, offset, count);
+        }
+    }
 }
 
 namespace Squared.Data.Mangler.Serialization {
@@ -161,17 +250,21 @@ namespace Squared.Data.Mangler.Serialization {
 
     public class StringSerializer {
         public readonly Encoding Encoding;
+        public readonly Deserializer<string> Deserialize;
+        public readonly Serializer<string> Serialize;
 
         public StringSerializer (Encoding encoding = null) {
             Encoding = encoding ?? Encoding.UTF8;
+            Serialize = _Serialize;
+            Deserialize = _Deserialize;
         }
 
-        public void Serialize (ref SerializationContext context, ref string input) {
+        private void _Serialize (ref SerializationContext context, ref string input) {
             var bytes = Encoding.GetBytes(input);
             context.Stream.Write(bytes, 0, bytes.Length);
         }
 
-        public unsafe void Deserialize (ref DeserializationContext context, out string output) {
+        private unsafe void _Deserialize (ref DeserializationContext context, out string output) {
             output = new String((sbyte *)context.Source, 0, (int)context.SourceLength, Encoding);
         }
     }
@@ -180,20 +273,24 @@ namespace Squared.Data.Mangler.Serialization {
         where T : struct {
 
         public static readonly uint Size;
+        public static readonly Serializer<T> Serialize;
+        public static readonly Deserializer<T> Deserialize;
 
         static BlittableSerializer () {
             Size = (uint)Marshal.SizeOf(typeof(T));
+            Serialize = _Serialize;
+            Deserialize = _Deserialize;
         }
 
-        public static unsafe void Serialize (ref SerializationContext context, ref T input) {
-            var buffer = new byte[Size];
-            fixed (byte * pBuffer = buffer)
-                Unsafe<T>.StructureToPtr(ref input, pBuffer, Size);
+        static unsafe void _Serialize (ref SerializationContext context, ref T input) {
+            var buffer = ImmutableArrayPool<byte>.Allocate((int)Size);
+            fixed (byte * pBuffer = buffer.Array)
+                Unsafe<T>.StructureToPtr(ref input, pBuffer + buffer.Offset, Size);
 
-            context.Stream.Write(buffer, 0, (int)Size);
+            context.Stream.Write(buffer.Array, buffer.Offset, (int)Size);
         }
 
-        public static unsafe void Deserialize (ref DeserializationContext context, out T output) {
+        static unsafe void _Deserialize (ref DeserializationContext context, out T output) {
             Unsafe<T>.PtrToStructure(context.Source, out output, context.SourceLength);
         }
     }

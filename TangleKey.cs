@@ -50,23 +50,23 @@ namespace Squared.Data.Mangler {
         public readonly ArraySegment<byte> Data;
 
         public TangleKey (uint key)
-            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(uint)]) {
+            : this(ImmutableBufferPool.GetBytes(key), typeof(uint)) {
         }
 
         public TangleKey (ulong key)
-            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(ulong)]) {
+            : this(ImmutableBufferPool.GetBytes(key), typeof(ulong)) {
         }
 
         public TangleKey (int key)
-            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(int)]) {
+            : this(ImmutableBufferPool.GetBytes(key), typeof(int)) {
         }
 
         public TangleKey (long key)
-            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(long)]) {
+            : this(ImmutableBufferPool.GetBytes(key), typeof(long)) {
         }
 
         public TangleKey (string key)
-            : this(Encoding.ASCII.GetBytes(key), TypeToTypeId[typeof(string)]) {
+            : this(ImmutableBufferPool.GetBytes(key, Encoding.UTF8), typeof(string)) {
         }
 
         public TangleKey (byte[] array)
@@ -81,8 +81,16 @@ namespace Squared.Data.Mangler {
             : this(array, 0, array.Length, originalType) {
         }
 
+        public TangleKey (byte[] array, int offset, int count, Type originalType)
+            : this(new ArraySegment<byte>(array, offset, count), originalType) {
+        }
+
         public TangleKey (byte[] array, int offset, int count, ushort originalType)
             : this(new ArraySegment<byte>(array, offset, count), originalType) {
+        }
+
+        public TangleKey (ArraySegment<byte> data, Type originalType)
+            : this(data, TypeToTypeId[originalType]) {
         }
 
         public TangleKey (ArraySegment<byte> data, ushort originalType) {
