@@ -351,6 +351,28 @@ namespace Squared.Data.Mangler.Tests {
             foreach (var kvp in results)
                 Assert.AreEqual((int)kvp.Key.Value, kvp.Value);
         }
+
+        [Test]
+        public void TestGetAllValues () {
+            const int numValues = 100000;
+
+            Scheduler.WaitFor(WriteLotsOfValuesInBatch(Tangle, numValues, -1));
+
+            long startTime = Time.Ticks;
+            var fValues = Tangle.GetAllValues();
+            var values = Scheduler.WaitFor(fValues);
+            decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "Fetched {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                numValues, elapsedSeconds, numValues / elapsedSeconds
+            );
+
+            Assert.AreEqual(numValues, values.Length);
+            Assert.AreEqual(
+                Enumerable.Range(0, numValues).ToArray(),
+                values.OrderBy((v) => v).ToArray()
+            );
+        }
     }
 
     [TestFixture]

@@ -317,6 +317,22 @@ namespace Squared.Data.Mangler {
             }
         }
 
+        private class GetAllValuesThunk : ThunkBase<T[]> {
+            protected override void OnExecute (Tangle<T> tangle, out T[] result) {
+                var nodeCount = tangle.BTreeNodeCount;
+                var count = tangle.Count;
+                int position = 0;
+
+                result = new T[count];
+
+                for (int node = 0; node < nodeCount; node++)
+                    position += tangle.InternalGetNodeValues(node, result, position);
+
+                if (position != count)
+                    throw new InvalidDataException();
+            }
+        }
+
         private class FindThunk : ThunkBase<FindResult> {
             public readonly TangleKey Key;
 
@@ -547,9 +563,16 @@ namespace Squared.Data.Mangler {
         /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys.
         /// </summary>
         /// <returns>A future that will contain the retrieved values.</returns>
-        /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
         public Future<IEnumerable<KeyValuePair<TangleKey, T>>> Get (IEnumerable<TangleKey> keys) {
             return QueueWorkItem(new GetMultipleThunk(keys));
+        }
+
+        /// <summary>
+        /// Reads every value from the tangle, in no particular order.
+        /// </summary>
+        /// <returns>A future that will contain the retrieved values.</returns>
+        public Future<T[]> GetAllValues () {
+            return QueueWorkItem(new GetAllValuesThunk());
         }
 
         protected Future<T> GetValueByIndex (long nodeIndex, uint valueIndex) {
@@ -1303,9 +1326,27 @@ namespace Squared.Data.Mangler {
             return true;
         }
 
+        private int InternalGetNodeValues (long nodeIndex, T[] output, int outputOffset) {
+            using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.Read)) {
+                var pNode = (BTreeNode *)range.Pointer;
+
+                if (pNode->IsValid != 1)
+                    throw new InvalidDataException();
+
+                var numValues = pNode->NumValues;
+                for (int i = 0; i < numValues; i++) {
+                    var pEntry = (IndexEntry *)(range.Pointer + BTreeNode.OffsetOfValues + (i * IndexEntry.Size));
+
+                    ReadData(ref *pEntry, out output[i + outputOffset]);
+                }
+
+                return numValues;
+            }
+        }
+
         private void InternalGetFoundValue (long nodeIndex, uint valueIndex, out T result) {
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
-                var pEntry = (IndexEntry*)range.Pointer;
+                var pEntry = (IndexEntry *)range.Pointer;
                 ReadData(ref *pEntry, out result);
             }
         }
