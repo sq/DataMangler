@@ -557,7 +557,7 @@ namespace Squared.Data.Mangler {
                 future.Bind(ThunkSignal);
             }
 
-            public IFuture Future {
+            new public IFuture Future {
                 get {
                     return ThunkSignal;
                 }
@@ -645,7 +645,7 @@ namespace Squared.Data.Mangler {
             if (_SerializationBuffer == null)
                 _SerializationBuffer = new MemoryStream();
 
-            var context = new SerializationContext<T>(this, _SerializationBuffer);
+            var context = new SerializationContext<T>(_SerializationBuffer);
             Serializer(ref context, ref value);
             var result = context.Bytes;
 
@@ -1164,7 +1164,7 @@ namespace Squared.Data.Mangler {
                 throw new InvalidDataException();
 
             using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength)) {
-                var context = new DeserializationContext<T>(this, range.Pointer, entry.DataLength);
+                var context = new DeserializationContext<T>(range.Pointer, entry.DataLength);
                 try {
                     Deserializer(ref context, out value);
                 } finally {
@@ -1363,30 +1363,6 @@ namespace Squared.Data.Mangler {
 
             return true;
         }
-
-        private struct NodeInfo {
-            public long Node;
-            public long? Parent;
-        }
-
-        /*
-        private TangleKey GetKeyFromIndex (long index) {
-            using (var indexRange = AccessIndex(index, MemoryMappedFileAccess.Read)) {
-                var pEntry = (IndexEntry *)indexRange.Pointer;
-                if (pEntry->KeyType == 0)
-                    throw new InvalidDataException();
-
-                using (var keyRange = KeyStream.AccessRange(
-                    pEntry->KeyOffset, pEntry->KeyLength, MemoryMappedFileAccess.Read
-                )) {
-                    var array = new byte[pEntry->KeyLength];
-                    ReadBytes(keyRange.Pointer, 0, array, 0, pEntry->KeyLength); 
-
-                    return new TangleKey(array, pEntry->KeyType);
-                }
-            }
-        }
-         */
 
         private uint GetNodeValueCount (long nodeIndex) {
             using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.Read)) {

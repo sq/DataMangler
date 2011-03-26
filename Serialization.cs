@@ -6,6 +6,7 @@ using System.Text;
 using System.IO;
 using System.Xml.Serialization;
 using Squared.Data.Mangler.Internal;
+using Squared.Data.Mangler.Serialization;
 
 namespace Squared.Data.Mangler {
     [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = false)]
@@ -17,27 +18,39 @@ namespace Squared.Data.Mangler {
     }
 
     public unsafe struct SerializationContext<T> {
-        private readonly Tangle<T> Tangle;
-        private bool BytesProvided;
+        private bool BytesProvided, StreamInUse;
         private ArraySegment<byte> _Bytes;
+        private readonly MemoryStream _Stream;
 
-        public readonly MemoryStream Stream;
-
-        public SerializationContext (Tangle<T> tangle, MemoryStream stream) {
-            Tangle = tangle;
-            Stream = stream;
+        public SerializationContext (MemoryStream stream) {
+            _Stream = stream;
             BytesProvided = false;
+            StreamInUse = false;
             _Bytes = default(ArraySegment<byte>);
         }
 
         public void SetResult (byte[] bytes) {
-            BytesProvided = true;
-            _Bytes = new ArraySegment<byte>(bytes);
+            SetResult(new ArraySegment<byte>(bytes));
         }
 
         public void SetResult (ArraySegment<byte> bytes) {
+            if (StreamInUse)
+                throw new InvalidOperationException("You are already using this context's Stream");
+            if (BytesProvided)
+                throw new InvalidOperationException("You already provided an ArraySegment");
+
             BytesProvided = true;
             _Bytes = bytes;
+        }
+
+        public Stream Stream {
+            get {
+                if (BytesProvided)
+                    throw new InvalidOperationException("You already provided an ArraySegment");
+
+                StreamInUse = true;
+                return _Stream;
+            }
         }
 
         internal ArraySegment<byte> Bytes {
@@ -45,20 +58,37 @@ namespace Squared.Data.Mangler {
                 if (BytesProvided)
                     return _Bytes;
                 else
-                    return new ArraySegment<byte>(Stream.GetBuffer(), 0, (int)Stream.Length);
+                    return new ArraySegment<byte>(_Stream.GetBuffer(), 0, (int)_Stream.Length);
             }
+        }
+
+        public void SerializeValue<U> (U input) {
+            SerializeValue<U>(ref input);
+        }
+
+        public void SerializeValue<U> (ref U input) {
+            SerializeValue<U>(Defaults<U>.Serializer, ref input);
+        }
+
+        public void SerializeValue<U> (Serializer<U> serializer, U input) {
+            SerializeValue<U>(serializer, ref input);
+        }
+
+        public void SerializeValue<U> (Serializer<U> serializer, ref U input) {
+            var subContext = new SerializationContext<U>(_Stream);
+            serializer(ref subContext, ref input);
+            if (subContext.BytesProvided)
+                _Stream.Write(subContext._Bytes.Array, subContext._Bytes.Offset, subContext._Bytes.Count);
         }
     }
 
     public unsafe struct DeserializationContext<T> {
-        private readonly Tangle<T> Tangle;
         private UnmanagedMemoryStream _Stream;
 
         public readonly byte * Source;
         public readonly uint SourceLength;
 
-        public DeserializationContext (Tangle<T> tangle, byte * source, uint sourceLength) {
-            Tangle = tangle;
+        public DeserializationContext (byte * source, uint sourceLength) {
             Source = source;
             SourceLength = sourceLength;
             _Stream = null;
@@ -71,6 +101,24 @@ namespace Squared.Data.Mangler {
 
                 return _Stream;
             }
+        }
+
+        public void DeserializeValue<U> (uint offset, out U output) {
+            DeserializeValue<U>(offset, SourceLength - offset, out output);
+        }
+
+        public void DeserializeValue<U> (uint offset, uint length, out U output) {
+            DeserializeValue<U>(Defaults<U>.Deserializer, offset, length, out output);
+        }
+
+        public void DeserializeValue<U> (Deserializer<U> deserializer, uint offset, out U output) {
+            DeserializeValue<U>(deserializer, offset, SourceLength - offset, out output);
+        }
+
+        public void DeserializeValue<U> (Deserializer<U> deserializer, uint offset, uint length, out U output) {
+            var subContext = new DeserializationContext<U>(Source + offset, length);
+            deserializer(ref subContext, out output);
+            subContext.Dispose();
         }
 
         internal void Dispose () {
