@@ -26,6 +26,7 @@ using Microsoft.Win32.SafeHandles;
 using System.Collections.Generic;
 using System.Security;
 using System.Collections.Concurrent;
+using Squared.Util;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -160,6 +161,7 @@ namespace Squared.Data.Mangler.Internal {
 
     internal class ViewCache : IDisposable {
         public unsafe class CacheEntry : IDisposable {
+            public readonly long CreatedWhen;
             public readonly SafeBuffer Buffer;
             public readonly byte* Pointer;
             public readonly long PointerOffset;
@@ -167,15 +169,16 @@ namespace Squared.Data.Mangler.Internal {
             public readonly uint Size;
             public readonly MemoryMappedViewAccessor View;
 
-            private bool IsDisposed;
-            private int RefCount;
+            private bool _IsDisposed;
+            private int _RefCount;
 
             public CacheEntry (MemoryMappedViewAccessor view, long offset, uint size) {
+                CreatedWhen = Time.Ticks;
                 View = view;
                 Offset = offset;
                 Size = size;
-                IsDisposed = false;
-                RefCount = 1;
+                _IsDisposed = false;
+                _RefCount = 1;
                 Buffer = view.GetSafeBuffer();
                 Pointer = null;
                 Buffer.AcquirePointer(ref Pointer);
@@ -183,24 +186,24 @@ namespace Squared.Data.Mangler.Internal {
             }
 
             public void AddRef () {
-                if (IsDisposed)
+                if (_IsDisposed)
                     throw new ObjectDisposedException("CacheEntry");
 
-                Interlocked.Increment(ref RefCount);
+                Interlocked.Increment(ref _RefCount);
             }
 
             public void RemoveRef () {
-                if (IsDisposed) {
+                if (_IsDisposed) {
                     // This can happen if the stream is grown while a reference is held to one of its views.
                     // In this case, we don't want using() blocks and finally handlers to throw exceptions.
 
-                    if (Interlocked.Decrement(ref RefCount) < 0)
+                    if (Interlocked.Decrement(ref _RefCount) < 0)
                         throw new ObjectDisposedException("CacheEntry");
 
                     return;
                 }
 
-                if (Interlocked.Decrement(ref RefCount) == 0)
+                if (Interlocked.Decrement(ref _RefCount) == 0)
                     Release();
             }
 
@@ -209,22 +212,28 @@ namespace Squared.Data.Mangler.Internal {
             }
 
             internal void Release () {
-                IsDisposed = true;
+                _IsDisposed = true;
                 Buffer.ReleasePointer();
                 View.Dispose();
+            }
+
+            public bool IsDisposed {
+                get {
+                    return _IsDisposed;
+                }
             }
         }
 
         public readonly MemoryMappedFile File;
         public readonly long FileLength;
         public readonly int Capacity;
-        private readonly ConcurrentQueue<CacheEntry> Cache;
+        private readonly CacheEntry[] Cache;
 
         public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 4) {
             File = file;
             FileLength = fileLength;
             Capacity = capacity;
-            Cache = new ConcurrentQueue<CacheEntry>();
+            Cache = new CacheEntry[capacity];
         }
 
         public MemoryMappedViewAccessor CreateViewUncached (long offset, uint size, MemoryMappedFileAccess access, out long actualOffset, out uint actualSize) {
@@ -251,7 +260,21 @@ namespace Squared.Data.Mangler.Internal {
             if (access == MemoryMappedFileAccess.Write)
                 access = MemoryMappedFileAccess.ReadWrite;
 
-            foreach (var item in Cache) {
+            int? freeSlot = null;
+            int? oldestUsedSlot = null;
+            long oldestUsedTimestamp = long.MaxValue;
+
+            for (int i = 0; i < Capacity; i++) {
+                var item = Cache[i];
+
+                if (item == null || item.IsDisposed) {
+                    freeSlot = i;
+                    continue;
+                }
+
+                if (item.CreatedWhen < oldestUsedTimestamp)
+                    oldestUsedSlot = i;
+
                 if (offset < item.Offset)
                     continue;
                 if (offset + size > item.Offset + item.Size)
@@ -261,28 +284,32 @@ namespace Squared.Data.Mangler.Internal {
                 return item;
             }
 
-            if (Cache.Count > Capacity) {
-                CacheEntry ce;
-                if (Cache.TryDequeue(out ce))
-                    ce.RemoveRef();
-            }
+            if (!freeSlot.HasValue && !oldestUsedSlot.HasValue)
+                throw new InvalidDataException();
 
             long actualOffset;
             uint actualSize;
             var view = CreateViewUncached(offset, size, MemoryMappedFileAccess.ReadWrite, out actualOffset, out actualSize);
 
             var newEntry = new CacheEntry(view, actualOffset, actualSize);
-            Cache.Enqueue(newEntry);
-
             newEntry.AddRef();
+
+            long slotIndex = freeSlot.GetValueOrDefault(oldestUsedSlot.GetValueOrDefault(0));
+            var oldEntry = Interlocked.Exchange(ref Cache[slotIndex], newEntry);
+
+            if (oldEntry != null)
+                oldEntry.RemoveRef();
+
             return newEntry;
         }
 
         public void Dispose () {
-            CacheEntry ce;
+            for (int i = 0; i < Capacity; i++) {
+                var ce = Interlocked.Exchange(ref Cache[i], null);
 
-            while (Cache.TryDequeue(out ce))
-                ce.Release();
+                if (ce != null)
+                    ce.Release();
+            }
         }
     }
 

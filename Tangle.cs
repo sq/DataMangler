@@ -268,7 +268,7 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private class GetMultipleThunk : ThunkBase<IEnumerable<KeyValuePair<TangleKey, T>>> {
+        private class GetMultipleThunk : ThunkBase<KeyValuePair<TangleKey, T>[]> {
             public readonly IEnumerable<TangleKey> Keys;
 
             public GetMultipleThunk (IEnumerable<TangleKey> keys) {
@@ -287,33 +287,27 @@ namespace Squared.Data.Mangler {
                     return null;
             }
 
-            protected override void OnExecute (Tangle<T> tangle, out IEnumerable<KeyValuePair<TangleKey, T>> result) {
+            protected override void OnExecute (Tangle<T> tangle, out KeyValuePair<TangleKey, T>[] result) {
+                var keys = Keys;
+
                 var count = GetCountFast(Keys);
-                if (count.HasValue) {
-                    var results = new KeyValuePair<TangleKey, T>[count.Value];
-
-                    Parallel.ForEach(
-                        Keys, (key, loopState, i) => {
-                            T value;
-                            if (tangle.InternalGet(key, out value))
-                                results[i] = new KeyValuePair<TangleKey,T>(key, value);
-                        }
-                    );
-
-                    result = results;
-                } else {
-                    var list = new ConcurrentBag<KeyValuePair<TangleKey, T>>();
-
-                    Parallel.ForEach(
-                        Keys, (key) => {
-                            T value;
-                            if (tangle.InternalGet(key, out value))
-                                list.Add(new KeyValuePair<TangleKey, T>(key, value));
-                        }
-                    );
-
-                    result = list;
+                if (!count.HasValue) {
+                    var array = Keys.ToArray();
+                    keys = array;
+                    count = array.Length;
                 }
+
+                var results = new KeyValuePair<TangleKey, T>[count.Value];
+
+                Parallel.ForEach(
+                    keys, (key, loopState, i) => {
+                        T value;
+                        if (tangle.InternalGet(key, out value))
+                            results[i] = new KeyValuePair<TangleKey, T>(key, value);
+                    }
+                );
+
+                result = results;
             }
         }
 
@@ -563,7 +557,7 @@ namespace Squared.Data.Mangler {
         /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys.
         /// </summary>
         /// <returns>A future that will contain the retrieved values.</returns>
-        public Future<IEnumerable<KeyValuePair<TangleKey, T>>> Get (IEnumerable<TangleKey> keys) {
+        public Future<KeyValuePair<TangleKey, T>[]> Get (IEnumerable<TangleKey> keys) {
             return QueueWorkItem(new GetMultipleThunk(keys));
         }
 

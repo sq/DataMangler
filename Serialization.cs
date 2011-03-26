@@ -143,8 +143,8 @@ namespace Squared.Data.Mangler {
         }
 
         internal void Dispose () {
-            if (Stream != null)
-                Stream.Dispose();
+            if (_Stream != null)
+                _Stream.Dispose();
         }
     }
 }
