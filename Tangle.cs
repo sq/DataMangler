@@ -448,21 +448,23 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private static long StreamAppend<U> (StreamRef stream, ref U value) 
+        private static long? StreamAppend<U> (StreamRef stream, ref U value) 
             where U : struct {
             uint entrySize = (uint)Marshal.SizeOf(typeof(U));
-            long spot = stream.AllocateSpace(entrySize);
+            long? spot = stream.AllocateSpace(entrySize);
 
-            using (var range = stream.AccessRange(spot, entrySize, MemoryMappedFileAccess.Write))
+            if (spot.HasValue)
+            using (var range = stream.AccessRange(spot.Value, entrySize, MemoryMappedFileAccess.Write))
                 Unsafe<U>.StructureToPtr(ref value, range.Pointer, entrySize);
 
             return spot;
         }
 
-        private static long StreamAppend (StreamRef stream, ArraySegment<byte> data) {
-            long spot = stream.AllocateSpace((uint)data.Count);
+        private static long? StreamAppend (StreamRef stream, ArraySegment<byte> data) {
+            long? spot = stream.AllocateSpace((uint)data.Count);
 
-            using (var range = stream.AccessRange(spot, (uint)data.Count, MemoryMappedFileAccess.Write))
+            if (spot.HasValue)
+            using (var range = stream.AccessRange(spot.Value, (uint)data.Count, MemoryMappedFileAccess.Write))
                 WriteBytes(range.Pointer, 0, data);
 
             return spot;
@@ -871,7 +873,7 @@ namespace Squared.Data.Mangler {
         }
 
         private long CreateBTreeNode () {
-            long offset = IndexStream.AllocateSpace(BTreeNode.TotalSize);
+            long offset = IndexStream.AllocateSpace(BTreeNode.TotalSize).Value;
             var newIndex = (offset - BTreeHeader.Size) / BTreeNode.TotalSize;
 
             return newIndex;
@@ -985,7 +987,7 @@ namespace Squared.Data.Mangler {
                 var segment = Serialize(ref value);
                 uint count = (uint)segment.Count;
 
-                long dataOffset = pEntry->DataOffset;
+                long? dataOffset = pEntry->DataOffset;
                 WriteModes writeMode = (segment.Count > pEntry->DataLength + pEntry->ExtraDataBytes) ?
                     WriteModes.AppendData : WriteModes.ReplaceData;
 
@@ -1027,6 +1029,13 @@ namespace Squared.Data.Mangler {
             if (writeMode == WriteModes.Invalid)
                 throw new InvalidDataException();
 
+            if (!dataOffset.HasValue) {
+                if (data.Count == 0)
+                    return;
+                else
+                    throw new InvalidDataException();
+            }
+
             var count = (uint)data.Count;
             var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
 
@@ -1064,8 +1073,7 @@ namespace Squared.Data.Mangler {
         private bool InternalSet (TangleKey key, ref T value, IReplaceCallback replacementCallback) {
             ThreadCheck();
 
-            long keyOffset = 0;
-            long? dataOffset = null;
+            long? keyOffset = null, dataOffset = null;
 
             long nodeIndex, parentNodeIndex;
             uint valueIndex, parentValueIndex;
@@ -1105,17 +1113,17 @@ namespace Squared.Data.Mangler {
 
                     if (key.Data.Count > IndexEntry.KeyPrefixSize)
                         keyOffset = KeyStream.AllocateSpace((uint)key.Data.Count);
-                    else
-                        keyOffset = 0;
                 }
 
                 if (writeMode != WriteModes.ReplaceData)
                     dataOffset = DataStream.AllocateSpace((uint)segment.Count);
+                else
+                    dataOffset = pEntry->DataOffset;
 
                 if (writeMode == WriteModes.AppendDataAndKey) {
                     *pEntry = new IndexEntry {
-                        DataOffset = (uint)dataOffset.Value,
-                        KeyOffset = (uint)keyOffset,
+                        DataOffset = (uint)dataOffset.GetValueOrDefault(0),
+                        KeyOffset = (uint)keyOffset.GetValueOrDefault(0),
                         DataLength = (uint)segment.Count,
                         KeyLength = (ushort)key.Data.Count,
                         ExtraDataBytes = 0,

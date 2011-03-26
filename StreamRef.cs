@@ -363,9 +363,11 @@ namespace Squared.Data.Mangler.Internal {
         /// </summary>
         /// <param name="size">The number of bytes to allocate.</param>
         /// <returns>The offset into the stream where the allocated bytes are located.</returns>
-        public unsafe long AllocateSpace (uint size) {
-            long oldSize, newSize;
+        public unsafe long? AllocateSpace (uint size) {
+            if (size == 0)
+                return null;
 
+            long oldSize, newSize;
             // This is thread-safe, but because we bump the DataLength without
             //  making any effort to ensure the data in the region is valid,
             //  other threads may attempt to read it and find random garbage

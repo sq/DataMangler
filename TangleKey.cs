@@ -81,13 +81,17 @@ namespace Squared.Data.Mangler {
             : this(array, 0, array.Length, originalType) {
         }
 
-        public TangleKey (byte[] array, int offset, int count, ushort originalType) {
-            if (count >= ushort.MaxValue)
+        public TangleKey (byte[] array, int offset, int count, ushort originalType)
+            : this(new ArraySegment<byte>(array, offset, count), originalType) {
+        }
+
+        public TangleKey (ArraySegment<byte> data, ushort originalType) {
+            if (data.Count >= ushort.MaxValue)
                 throw new InvalidDataException("Key too long");
             if (originalType == 0)
                 throw new InvalidDataException("Invalid key type");
 
-            Data = new ArraySegment<byte>(array, offset, count);
+            Data = data;
             OriginalTypeId = originalType;
         }
 

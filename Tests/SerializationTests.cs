@@ -43,7 +43,6 @@ namespace Squared.Data.Mangler.Tests {
 
         [TearDown]
         public override void TearDown () {
-            // Tangle.ExportStreams(@"C:\dm_streams\");
             Tangle.Dispose();
             base.TearDown();
         }

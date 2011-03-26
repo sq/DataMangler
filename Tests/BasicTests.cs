@@ -482,6 +482,23 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set(1, hugeString));
             Assert.AreEqual(hugeString, Scheduler.WaitFor(Tangle.Get(1)));
         }
+
+        [Test]
+        public void TestZeroByteValue () {
+            var emptyString = "";
+            Scheduler.WaitFor(Tangle.Set(1, emptyString));
+            Assert.AreEqual(emptyString, Scheduler.WaitFor(Tangle.Get(1)));
+        }
+
+        [Test]
+        public void TestGrowFromZeroBytes () {
+            string emptyString = "", largerString = "abcdefgh";
+            Scheduler.WaitFor(Tangle.Set(1, emptyString));
+            Assert.AreEqual(emptyString, Scheduler.WaitFor(Tangle.Get(1)));
+            Scheduler.WaitFor(Tangle.Set(1, largerString));
+            Assert.AreEqual(largerString, Scheduler.WaitFor(Tangle.Get(1)));
+            Assert.AreEqual(0, Tangle.WastedDataBytes);
+        }
     }
 
     [TestFixture]
