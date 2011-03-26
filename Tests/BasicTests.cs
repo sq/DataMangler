@@ -320,7 +320,7 @@ namespace Squared.Data.Mangler.Tests {
 
         [Test]
         public void TestMultiGet () {
-            const int numValues = 50000;
+            const int numValues = 500000;
 
             Scheduler.WaitFor(WriteLotsOfValuesInBatch(Tangle, numValues, -1));
 
@@ -328,8 +328,14 @@ namespace Squared.Data.Mangler.Tests {
             for (int i = 0; i < numValues; i += 2)
                 keys.Add(new TangleKey(i));
 
+            long startTime = Time.Ticks;
             var fMultiGet = Tangle.Get(keys);
             var results = Scheduler.WaitFor(fMultiGet);
+            decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "Fetched {0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                keys.Count, elapsedSeconds, keys.Count / elapsedSeconds
+            );
 
             Assert.AreEqual(keys.Count, results.Count());
 

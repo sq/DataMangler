@@ -20,6 +20,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Linq;
+using System.Threading.Tasks;
 using Squared.Data.Mangler.Serialization;
 using Squared.Task;
 using System.IO;
@@ -28,6 +29,7 @@ using System.Threading;
 using Squared.Data.Mangler.Internal;
 using System.IO.MemoryMappedFiles;
 using System.Collections.Concurrent;
+using TaskScheduler = Squared.Task.TaskScheduler;
 
 namespace Squared.Data.Mangler {
     public class KeyNotFoundException : Exception {
@@ -286,16 +288,32 @@ namespace Squared.Data.Mangler {
             }
 
             protected override void OnExecute (Tangle<T> tangle, out IEnumerable<KeyValuePair<TangleKey, T>> result) {
-                int capacity = GetCountFast(Keys).GetValueOrDefault(256);                
-                var list = new List<KeyValuePair<TangleKey, T>>(capacity);
+                var count = GetCountFast(Keys);
+                if (count.HasValue) {
+                    var results = new KeyValuePair<TangleKey, T>[count.Value];
 
-                foreach (var key in Keys) {
-                    T value;
-                    if (tangle.InternalGet(key, out value))
-                        list.Add(new KeyValuePair<TangleKey, T>(key, value));
+                    Parallel.ForEach(
+                        Keys, (key, loopState, i) => {
+                            T value;
+                            if (tangle.InternalGet(key, out value))
+                                results[i] = new KeyValuePair<TangleKey,T>(key, value);
+                        }
+                    );
+
+                    result = results;
+                } else {
+                    var list = new ConcurrentBag<KeyValuePair<TangleKey, T>>();
+
+                    Parallel.ForEach(
+                        Keys, (key) => {
+                            T value;
+                            if (tangle.InternalGet(key, out value))
+                                list.Add(new KeyValuePair<TangleKey, T>(key, value));
+                        }
+                    );
+
+                    result = list;
                 }
-
-                result = list;
             }
         }
 
@@ -446,11 +464,6 @@ namespace Squared.Data.Mangler {
 
         void IndexStream_LengthChanged (object sender, EventArgs e) {
             _HeaderRange = IndexStream.AccessRangeUncached(0, BTreeHeader.Size);
-        }
-
-        private void ThreadCheck () {
-            if (Thread.CurrentThread != _WorkerThread.Thread)
-                throw new ThreadStateException();
         }
 
         private ArraySegment<byte> Serialize (ref T value) {
@@ -802,8 +815,6 @@ namespace Squared.Data.Mangler {
         }
 
         private void BTreePrepareForInsert (long nodeIndex, uint valueIndex) {
-            ThreadCheck();
-
             using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
                 var pNode = (BTreeNode *)range.Pointer;
                 var pValues = (IndexEntry *)(range.Pointer + BTreeNode.OffsetOfValues);
@@ -848,8 +859,6 @@ namespace Squared.Data.Mangler {
         }
 
         private void BTreeInsert (long nodeIndex, uint valueIndex, ref IndexEntry value, ref BTreeLeaf leaf) {
-            ThreadCheck();
-
             BTreePrepareForInsert(nodeIndex, valueIndex);
 
             using (var range = AccessBTreeNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
@@ -868,8 +877,6 @@ namespace Squared.Data.Mangler {
         }
 
         private void BTreeSplitLeafNode (long parentNodeIndex, uint leafValueIndex, long leafNodeIndex) {
-            ThreadCheck();
-
             long newIndex = CreateBTreeNode();
             var tMinus1 = BTreeNode.T - 1;
 
@@ -1021,8 +1028,6 @@ namespace Squared.Data.Mangler {
         }
 
         private void InternalSetFoundValue (long nodeIndex, uint valueIndex, ref T value) {
-            ThreadCheck();
-
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Write)) {
                 var pEntry = (IndexEntry *)range.Pointer;
 
@@ -1113,8 +1118,6 @@ namespace Squared.Data.Mangler {
         }
 
         private bool InternalSet (TangleKey key, ref T value, IReplaceCallback replacementCallback) {
-            ThreadCheck();
-
             long? keyOffset = null, dataOffset = null;
 
             long nodeIndex, parentNodeIndex;
@@ -1273,8 +1276,6 @@ namespace Squared.Data.Mangler {
         }
 
         private bool InternalFind (TangleKey key, out FindResult result) {
-            ThreadCheck();
-
             long nodeIndex;
             uint valueIndex;
 
@@ -1288,8 +1289,6 @@ namespace Squared.Data.Mangler {
         }
 
         private bool InternalGet (TangleKey key, out T value) {
-            ThreadCheck();
-
             long nodeIndex;
             uint valueIndex;
 
@@ -1305,8 +1304,6 @@ namespace Squared.Data.Mangler {
         }
 
         private void InternalGetFoundValue (long nodeIndex, uint valueIndex, out T result) {
-            ThreadCheck();
-
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry*)range.Pointer;
                 ReadData(ref *pEntry, out result);

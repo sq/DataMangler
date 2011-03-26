@@ -25,6 +25,7 @@ using System.IO;
 using Microsoft.Win32.SafeHandles;
 using System.Collections.Generic;
 using System.Security;
+using System.Collections.Concurrent;
 
 namespace Squared.Data.Mangler.Internal {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -185,7 +186,7 @@ namespace Squared.Data.Mangler.Internal {
                 if (IsDisposed)
                     throw new ObjectDisposedException("CacheEntry");
 
-                RefCount += 1;
+                Interlocked.Increment(ref RefCount);
             }
 
             public void RemoveRef () {
@@ -193,16 +194,13 @@ namespace Squared.Data.Mangler.Internal {
                     // This can happen if the stream is grown while a reference is held to one of its views.
                     // In this case, we don't want using() blocks and finally handlers to throw exceptions.
 
-                    if (RefCount <= 0)
+                    if (Interlocked.Decrement(ref RefCount) < 0)
                         throw new ObjectDisposedException("CacheEntry");
-                    else
-                        RefCount -= 1;
 
                     return;
                 }
 
-                RefCount -= 1;
-                if (RefCount <= 0)
+                if (Interlocked.Decrement(ref RefCount) == 0)
                     Release();
             }
 
@@ -220,13 +218,13 @@ namespace Squared.Data.Mangler.Internal {
         public readonly MemoryMappedFile File;
         public readonly long FileLength;
         public readonly int Capacity;
-        private readonly Queue<CacheEntry> Cache;
+        private readonly ConcurrentQueue<CacheEntry> Cache;
 
         public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 4) {
             File = file;
             FileLength = fileLength;
             Capacity = capacity;
-            Cache = new Queue<CacheEntry>(capacity);
+            Cache = new ConcurrentQueue<CacheEntry>();
         }
 
         public MemoryMappedViewAccessor CreateViewUncached (long offset, uint size, MemoryMappedFileAccess access, out long actualOffset, out uint actualSize) {
@@ -264,8 +262,9 @@ namespace Squared.Data.Mangler.Internal {
             }
 
             if (Cache.Count > Capacity) {
-                CacheEntry ce = Cache.Dequeue();
-                ce.RemoveRef();
+                CacheEntry ce;
+                if (Cache.TryDequeue(out ce))
+                    ce.RemoveRef();
             }
 
             long actualOffset;
@@ -280,8 +279,10 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         public void Dispose () {
-            while (Cache.Count > 0)
-                Cache.Dequeue().Release();
+            CacheEntry ce;
+
+            while (Cache.TryDequeue(out ce))
+                ce.Release();
         }
     }
 
