@@ -483,4 +483,21 @@ namespace Squared.Data.Mangler.Tests {
             Assert.AreEqual(hugeString, Scheduler.WaitFor(Tangle.Get(1)));
         }
     }
+
+    [TestFixture]
+    public class KeyTests {
+        [Test]
+        public void TestKeyEquals () {
+            var keyA = new TangleKey("abcd");
+            var keyB = new TangleKey("abcd");
+            var keyC = new TangleKey(2);
+            var keyD = new TangleKey(2);
+
+            Assert.IsTrue(keyA.Equals(keyA));
+            Assert.IsTrue(keyA.Equals(keyB));
+            Assert.IsTrue(keyC.Equals(keyC));
+            Assert.IsTrue(keyC.Equals(keyD));
+            Assert.IsFalse(keyA.Equals(keyC));
+        }
+    }
 }

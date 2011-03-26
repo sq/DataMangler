@@ -29,80 +29,6 @@ using Squared.Data.Mangler.Internal;
 using System.IO.MemoryMappedFiles;
 using System.Collections.Concurrent;
 
-namespace Squared.Data.Mangler.Internal {
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    internal unsafe struct BTreeHeader {
-        public static readonly uint Size;
-
-        public long RootIndex;
-        public long WastedDataBytes;
-        public long ItemCount;
-
-        static BTreeHeader () {
-            Size = (uint)Marshal.SizeOf(typeof(BTreeHeader));
-        }
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    internal unsafe struct BTreeNode {
-        public static readonly uint Size;
-        public static readonly uint TotalSize;
-        public static readonly uint OffsetOfValues;
-        public static readonly uint OffsetOfLeaves;
-
-        public const int T = 32;
-        public const int MaxValues = (2 * T) - 1;
-        public const int MaxLeaves = MaxValues + 1;
-
-        static BTreeNode () {
-            if (T % 2 != 0)
-                throw new InvalidDataException();
-
-            Size = (uint)Marshal.SizeOf(typeof(BTreeNode));
-            TotalSize = Size + (MaxValues * IndexEntry.Size) + (MaxLeaves * BTreeLeaf.Size);
-            OffsetOfValues = Size;
-            OffsetOfLeaves = OffsetOfValues + (MaxValues * IndexEntry.Size);
-        }
-
-        public byte IsValid;
-        public byte HasLeaves;
-        public ushort NumValues;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 4)]
-    internal unsafe struct BTreeLeaf {
-        public static readonly uint Size;
-
-        static BTreeLeaf () {
-            Size = (uint)Marshal.SizeOf(typeof(BTreeLeaf));
-        }
-
-        public uint NodeIndex;
-
-        public BTreeLeaf (long nodeIndex) {
-            NodeIndex = (uint)nodeIndex;
-        }
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    internal unsafe struct IndexEntry {
-        public const int KeyPrefixSize = 4;
-        public static readonly uint Size;
-
-        static IndexEntry () {
-            Size = (uint)Marshal.SizeOf(typeof(IndexEntry));
-        }
-
-        public uint DataOffset;
-        public uint DataLength;
-        public uint ExtraDataBytes;
-        public uint KeyOffset;
-        public ushort KeyLength;
-        public ushort KeyType;
-        public fixed byte KeyPrefix[KeyPrefixSize];
-    }
-}
-
 namespace Squared.Data.Mangler {
     public class KeyNotFoundException : Exception {
         public readonly TangleKey Key;
@@ -115,153 +41,6 @@ namespace Squared.Data.Mangler {
             get {
                 return String.Format("The key '{0}' was not found.", Key);
             }
-        }
-    }
-
-    public struct TangleKey {
-        private static readonly Dictionary<ushort, Type> TypeIdToType = new Dictionary<ushort, Type>();
-        private static readonly Dictionary<Type, ushort> TypeToTypeId = new Dictionary<Type, ushort>();
-
-        static TangleKey () {
-            RegisterType<string>();
-            RegisterType<byte[]>();
-            RegisterType<uint>();
-            RegisterType<int>();
-            RegisterType<ulong>();
-            RegisterType<long>();
-        }
-
-        private static void RegisterType<T> () {
-            if (TypeToTypeId.Count >= (ushort.MaxValue - 2))
-                throw new InvalidOperationException("Too many registered types");
-
-            var type = typeof(T);
-            ushort id = (byte)(TypeToTypeId.Count + 1);
-            TypeToTypeId[type] = id;
-            TypeIdToType[id] = type;
-        }
-
-        public readonly ushort OriginalTypeId;
-        public readonly ArraySegment<byte> Data;
-
-        public TangleKey (uint key)
-            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(uint)]) {
-        }
-
-        public TangleKey (ulong key)
-            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(ulong)]) {
-        }
-
-        public TangleKey (int key)
-            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(int)]) {
-        }
-
-        public TangleKey (long key)
-            : this(BitConverter.GetBytes(key), TypeToTypeId[typeof(long)]) {
-        }
-
-        public TangleKey (string key)
-            : this (Encoding.ASCII.GetBytes(key), TypeToTypeId[typeof(string)]) {
-        }
-
-        public TangleKey (byte[] array)
-            : this(array, 0, array.Length, TypeToTypeId[typeof(byte[])]) {
-        }
-
-        public TangleKey (byte[] array, int offset, int count)
-            : this(array, offset, count, TypeToTypeId[typeof(string)]) {
-        }
-
-        public TangleKey (byte[] array, ushort originalType)
-            : this(array, 0, array.Length, originalType) {
-        }
-
-        public TangleKey (byte[] array, int offset, int count, ushort originalType) {
-            if (count >= ushort.MaxValue)
-                throw new InvalidDataException("Key too long");
-            if (originalType == 0)
-                throw new InvalidDataException("Invalid key type");
-
-            Data = new ArraySegment<byte>(array, offset, count);
-            OriginalTypeId = originalType;
-        }
-
-        public Type OriginalType {
-            get {
-                return TypeIdToType[OriginalTypeId];
-            }
-        }
-
-        public object Value {
-            get {
-                var type = OriginalType;
-
-                if (type == typeof(string)) {
-                    return Encoding.ASCII.GetString(Data.Array, Data.Offset, Data.Count);
-                } else if (type == typeof(int)) {
-                    return BitConverter.ToInt32(Data.Array, Data.Offset);
-                } else if (type == typeof(uint)) {
-                    return BitConverter.ToUInt32(Data.Array, Data.Offset);
-                } else if (type == typeof(long)) {
-                    return BitConverter.ToInt64(Data.Array, Data.Offset);
-                } else if (type == typeof(ulong)) {
-                    return BitConverter.ToUInt64(Data.Array, Data.Offset);
-                } else /* if (type == typeof(byte[])) */ {
-                    return Data;
-                }
-            }
-        }
-
-        public static implicit operator TangleKey (string key) {
-            return new TangleKey(key);
-        }
-
-        public static implicit operator TangleKey (uint key) {
-            return new TangleKey(key);
-        }
-
-        public static implicit operator TangleKey (int key) {
-            return new TangleKey(key);
-        }
-
-        public static implicit operator TangleKey (ulong key) {
-            return new TangleKey(key);
-        }
-
-        public static implicit operator TangleKey (long key) {
-            return new TangleKey(key);
-        }
-
-        public override string ToString () {
-            var value = Value;
-
-            if (value is ArraySegment<byte>) {
-                var sb = new StringBuilder();
-                for (int i = 0; i < Data.Count; i++)
-                    sb.AppendFormat("{0:X2}", Data.Array[i + Data.Offset]);
-                return sb.ToString();
-            } else {
-                return value.ToString();
-            }
-        }
-    }
-
-    public interface ITangle : IDisposable {
-        IBarrier CreateBarrier (bool createOpened);
-
-        IEnumerable<TangleKey> Keys {
-            get;
-        }
-        long Count {
-            get;
-        }
-    }
-
-    public interface IBarrier : ISchedulable, IDisposable {
-        void Open ();
-
-        IFuture Future {
-            get;
         }
     }
 
@@ -645,7 +424,7 @@ namespace Squared.Data.Mangler {
             if (_SerializationBuffer == null)
                 _SerializationBuffer = new MemoryStream();
 
-            var context = new SerializationContext<T>(_SerializationBuffer);
+            var context = new SerializationContext(_SerializationBuffer);
             Serializer(ref context, ref value);
             var result = context.Bytes;
 
@@ -798,13 +577,17 @@ namespace Squared.Data.Mangler {
         }
 
         private StreamRange AccessBTreeNode (long index, MemoryMappedFileAccess access) {
-            long position = BTreeHeader.Size + (index * BTreeNode.TotalSize);
-            return IndexStream.AccessRange(position, BTreeNode.TotalSize, access);
+            unchecked {
+                long position = BTreeHeader.Size + (index * BTreeNode.TotalSize);
+                return IndexStream.AccessRange(position, BTreeNode.TotalSize, access);
+            }
         }
 
         private StreamRange AccessBTreeValue (long nodeIndex, uint valueIndex, MemoryMappedFileAccess access) {
-            long position = BTreeHeader.Size + ((nodeIndex * BTreeNode.TotalSize) + BTreeNode.OffsetOfValues + (valueIndex * IndexEntry.Size));
-            return IndexStream.AccessRange(position, IndexEntry.Size, access);
+            unchecked {
+                long position = BTreeHeader.Size + ((nodeIndex * BTreeNode.TotalSize) + BTreeNode.OffsetOfValues + (valueIndex * IndexEntry.Size));
+                return IndexStream.AccessRange(position, IndexEntry.Size, access);
+            }
         }
 
         /// <summary>
@@ -822,7 +605,9 @@ namespace Squared.Data.Mangler {
             uint compareLength;
 
             while (min <= max) {
-                pivot = min + ((max - min) >> 1);
+                unchecked {
+                    pivot = min + ((max - min) >> 1);
+                }
 
                 var pEntry = &entries[pivot];
                 if (pEntry->KeyType == 0)
@@ -1164,7 +949,7 @@ namespace Squared.Data.Mangler {
                 throw new InvalidDataException();
 
             using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength)) {
-                var context = new DeserializationContext<T>(range.Pointer, entry.DataLength);
+                var context = new DeserializationContext(range.Pointer, entry.DataLength);
                 try {
                     Deserializer(ref context, out value);
                 } finally {

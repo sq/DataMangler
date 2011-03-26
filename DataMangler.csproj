@@ -39,8 +39,11 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="DataStructures.cs" />
+    <Compile Include="Interfaces.cs" />
     <Compile Include="Serialization.cs" />
     <Compile Include="StreamCollection.cs" />
+    <Compile Include="TangleKey.cs" />
     <Compile Include="Util.cs" />
     <Compile Include="StreamRef.cs" />
     <Compile Include="Tangle.cs" />
