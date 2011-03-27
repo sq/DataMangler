@@ -61,8 +61,8 @@ namespace Squared.Data.Mangler {
         }
     }
 
-    public delegate bool JoinKeySelector<TLeft> (ref TangleKey leftKey, ref TLeft leftValue, out TangleKey rightKey);
-    public delegate TOut JoinValueSelector<TLeft, TRight, out TOut> (ref TangleKey leftKey, ref TLeft leftValue, ref TangleKey rightKey, ref TRight rightValue);
+    public delegate TangleKey? JoinKeySelector<TLeft> (TangleKey leftKey, ref TLeft leftValue);
+    public delegate TOut JoinValueSelector<TLeft, TRight, out TOut> (TangleKey leftKey, ref TLeft leftValue, TangleKey rightKey, ref TRight rightValue);
 
     /// <summary>
     /// Represents a persistent dictionary keyed by arbitrary byte strings. The values are not stored in any given order on disk, and the values are not required to be resident in memory.
@@ -387,18 +387,22 @@ namespace Squared.Data.Mangler {
                 RightBarrier.ReadyForJoinSignal.Wait();
 
                 Parallel.ForEach(
-                    keys, (key, loopState, i) => {
-                        TangleKey leftKey = key, rightKey;
+                    keys, (leftKey, loopState, i) => {
                         T leftValue;
                         TRight rightValue;
-                        if (!tangle.InternalGet(ref leftKey, out leftValue))
+
+                        if (!tangle.InternalGet(leftKey, out leftValue))
                             return;
-                        if (!KeySelector(ref leftKey, ref leftValue, out rightKey))
+
+                        var rightKey = KeySelector(leftKey, ref leftValue);
+                        if (!rightKey.HasValue)
                             return;
-                        if (!Right.InternalGet(ref rightKey, out rightValue))
+
+                        if (!Right.InternalGet(rightKey.Value, out rightValue))
                             return;
+
                         results[i] = ValueSelector(
-                            ref leftKey, ref leftValue, ref rightKey, ref rightValue
+                            leftKey, ref leftValue, rightKey.Value, ref rightValue
                         );
                     }
                 );
@@ -661,6 +665,7 @@ namespace Squared.Data.Mangler {
         /// <summary>
         /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys.
         /// </summary>
+        /// <param name="keys">The keys to look up in this tangle.</param>
         /// <returns>A future that will contain the retrieved values.</returns>
         public Future<KeyValuePair<TangleKey, T>[]> Get (IEnumerable<TangleKey> keys) {
             return QueueWorkItem(new GetMultipleThunk(keys));
@@ -670,7 +675,11 @@ namespace Squared.Data.Mangler {
         /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys,
         ///  and then uses those values to perform a lookup within a second tangle.
         /// </summary>
-        /// <returns>A future that will contain the retrieved values.</returns>
+        /// <param name="keys">The keys to look up in this tangle.</param>
+        /// <param name="right">The tangle to join against.</param>
+        /// <param name="keySelector">A delegate that takes a key/value pair from this tangle and produces a key to use for a lookup in the other tangle.</param>
+        /// <param name="valueSelector">A delegate that takes key/value pairs from both tangles and produces a result for the join.</param>
+        /// <returns>A future that will contain the join results.</returns>
         public Future<TOut[]> Join<TRight, TOut> (
             Tangle<TRight> right, IEnumerable<TangleKey> keys, 
             JoinKeySelector<T> keySelector, 
@@ -681,6 +690,27 @@ namespace Squared.Data.Mangler {
             return QueueWorkItem(new JoinThunk<TRight, TOut>(
                 rightBarrier, right, keys, keySelector, valueSelector
             ));
+        }
+
+        /// <summary>
+        /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys,
+        ///  and then uses those values to perform a lookup within a second tangle.
+        /// </summary>
+        /// <param name="keys">The keys to look up in this tangle.</param>
+        /// <param name="right">The tangle to join against.</param>
+        /// <param name="keySelector">A delegate that takes a value from this tangle and produces a key to use for a lookup in the other tangle.</param>
+        /// <returns>A future that will contain the join results.</returns>
+        public Future<KeyValuePair<T, TRight>[]> Join<TRight> (
+            Tangle<TRight> right, IEnumerable<TangleKey> keys,
+            Func<T, TangleKey> keySelector
+        ) {
+            return Join(
+                right, keys,
+                (TangleKey leftKey, ref T leftValue)
+                    => keySelector(leftValue),
+                (TangleKey leftKey, ref T leftValue, TangleKey rightKey, ref TRight rightValue)
+                    => new KeyValuePair<T, TRight>(leftValue, rightValue)
+            );
         }
 
         /// <summary>
@@ -1448,10 +1478,6 @@ namespace Squared.Data.Mangler {
         }
 
         private bool InternalGet (TangleKey key, out T value) {
-            return InternalGet(ref key, out value);
-        }
-
-        private bool InternalGet (ref TangleKey key, out T value) {
             long nodeIndex;
             uint valueIndex;
 
