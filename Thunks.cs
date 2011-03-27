@@ -302,7 +302,8 @@ namespace Squared.Data.Mangler {
 
                 var results = new TOut[count.Value];
 
-                RightBarrier.ReadyForJoinSignal.Wait();
+                if (RightBarrier != null)
+                    RightBarrier.ReadyForJoinSignal.Wait();
 
                 Parallel.ForEach(
                     keys, (leftKey, loopState, i) => {
@@ -322,7 +323,8 @@ namespace Squared.Data.Mangler {
 
                 result = results;
 
-                RightBarrier.JoinCompleteSignal.Set();
+                if (RightBarrier != null)
+                    RightBarrier.JoinCompleteSignal.Set();
             }
         }
 

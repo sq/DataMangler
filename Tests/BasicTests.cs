@@ -446,6 +446,21 @@ namespace Squared.Data.Mangler.Tests {
                 }
             }
         }
+
+        [Test]
+        public void TestSelfJoin () {
+            Scheduler.WaitFor(Tangle.Set(1, 2));
+            Scheduler.WaitFor(Tangle.Set(2, 8));
+            Scheduler.WaitFor(Tangle.Set(3, 4));
+            Scheduler.WaitFor(Tangle.Set(4, 16));
+
+            var joinResult = Scheduler.WaitFor(Tangle.Join(Tangle, new[] { 1, 3 }, (left) => left));
+            
+            Assert.AreEqual(2, joinResult[0].Key);
+            Assert.AreEqual(8, joinResult[0].Value);
+            Assert.AreEqual(4, joinResult[1].Key);
+            Assert.AreEqual(16, joinResult[1].Value);
+        }
     }
 
     [TestFixture]

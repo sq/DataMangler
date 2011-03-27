@@ -259,8 +259,12 @@ namespace Squared.Data.Mangler {
             JoinKeySelector<TLeftKey, T, TRightKey> keySelector,
             JoinValueSelector<TLeftKey, T, TRightKey, TRight, TOut> valueSelector
         ) {
-            var rightBarrier = new Tangle<TRight>.JoinBarrierThunk();
-            right.QueueWorkItem(rightBarrier);
+            Tangle<TRight>.JoinBarrierThunk rightBarrier = null;
+            if (!Object.Equals(right, this)) {
+                rightBarrier = new Tangle<TRight>.JoinBarrierThunk();
+                right.QueueWorkItem(rightBarrier);
+            }
+
             return QueueWorkItem(new JoinThunk<TLeftKey, TRightKey, TRight, TOut>(
                 rightBarrier, right, keys, keySelector, valueSelector
             ));
