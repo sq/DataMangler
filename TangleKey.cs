@@ -181,10 +181,6 @@ namespace Squared.Data.Mangler {
         }
 
         public int CompareTo (TangleKey rhs) {
-            return CompareTo(ref rhs);
-        }
-
-        public int CompareTo (ref TangleKey rhs) {
             int result = OriginalTypeId.CompareTo(rhs.OriginalTypeId);
             if (result == 0)
                 result = CompareData(Data, rhs.Data);
@@ -193,11 +189,7 @@ namespace Squared.Data.Mangler {
         }
 
         public bool Equals (TangleKey other) {
-            return CompareTo(ref other) == 0;
-        }
-
-        public bool Equals (ref TangleKey other) {
-            return CompareTo(ref other) == 0;
+            return CompareTo(other) == 0;
         }
 
         public override bool Equals (object other) {

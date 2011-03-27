@@ -86,7 +86,7 @@ namespace Squared.Data.Mangler {
             private readonly long NodeIndex;
             private readonly uint ValueIndex;
 
-            internal FindResult (Tangle<T> owner, ref TangleKey key, long nodeIndex, uint valueIndex) {
+            internal FindResult (Tangle<T> owner, TangleKey key, long nodeIndex, uint valueIndex) {
                 Tangle = owner;
                 Key = key;
                 NodeIndex = nodeIndex;
@@ -179,7 +179,7 @@ namespace Squared.Data.Mangler {
             public readonly TangleKey Key;
             public readonly bool ShouldReplace;
 
-            public SetThunk (ref TangleKey key, ref T value, bool shouldReplace) {
+            public SetThunk (TangleKey key, ref T value, bool shouldReplace) {
                 Key = key;
                 Value = value;
                 ShouldReplace = shouldReplace;
@@ -242,14 +242,14 @@ namespace Squared.Data.Mangler {
             public readonly UpdateCallback Callback;
             public readonly DecisionUpdateCallback DecisionCallback;
 
-            public UpdateThunk (ref TangleKey key, ref T value, UpdateCallback callback) {
+            public UpdateThunk (TangleKey key, ref T value, UpdateCallback callback) {
                 Key = key;
                 Value = value;
                 Callback = callback;
                 DecisionCallback = null;
             }
 
-            public UpdateThunk (ref TangleKey key, ref T value, DecisionUpdateCallback callback) {
+            public UpdateThunk (TangleKey key, ref T value, DecisionUpdateCallback callback) {
                 Key = key;
                 Value = value;
                 Callback = null;
@@ -276,7 +276,7 @@ namespace Squared.Data.Mangler {
         private class GetThunk : ThunkBase<T> {
             public readonly TangleKey Key;
 
-            public GetThunk (ref TangleKey key) {
+            public GetThunk (TangleKey key) {
                 Key = key;
             }
 
@@ -432,7 +432,7 @@ namespace Squared.Data.Mangler {
         private class FindThunk : ThunkBase<FindResult> {
             public readonly TangleKey Key;
 
-            public FindThunk (ref TangleKey key) {
+            public FindThunk (TangleKey key) {
                 Key = key;
             }
 
@@ -659,7 +659,7 @@ namespace Squared.Data.Mangler {
         /// <returns>A future that will contain the value once it has been read.</returns>
         /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
         public Future<T> Get (TangleKey key) {
-            return QueueWorkItem(new GetThunk(ref key));
+            return QueueWorkItem(new GetThunk(key));
         }
 
         /// <summary>
@@ -735,7 +735,7 @@ namespace Squared.Data.Mangler {
         /// <returns>A future that will contain a reference to the key, if it was found.</returns>
         /// <exception cref="KeyNotFoundException">If the specified key is not found, the future will contain a KeyNotFoundException.</exception>
         public Future<FindResult> Find (TangleKey key) {
-            return QueueWorkItem(new FindThunk(ref key));
+            return QueueWorkItem(new FindThunk(key));
         }
 
         /// <summary>
@@ -743,7 +743,7 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public IFuture Set (TangleKey key, T value) {
-            return QueueWorkItem(new SetThunk(ref key, ref value, true));
+            return QueueWorkItem(new SetThunk(key, ref value, true));
         }
 
         /// <summary>
@@ -751,7 +751,7 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk. The future's value will be false if the operation was aborted.</returns>
         public Future<bool> Add (TangleKey key, T value) {
-            return QueueWorkItem(new SetThunk(ref key, ref value, false));
+            return QueueWorkItem(new SetThunk(key, ref value, false));
         }
 
         /// <summary>
@@ -759,7 +759,7 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public Future<bool> AddOrUpdate (TangleKey key, T value, UpdateCallback updateCallback) {
-            return QueueWorkItem(new UpdateThunk(ref key, ref value, updateCallback));
+            return QueueWorkItem(new UpdateThunk(key, ref value, updateCallback));
         }
 
         /// <summary>
@@ -767,7 +767,7 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <returns>A future that completes once the value has been stored to disk.</returns>
         public Future<bool> AddOrUpdate (TangleKey key, T value, DecisionUpdateCallback updateCallback) {
-            return QueueWorkItem(new UpdateThunk(ref key, ref value, updateCallback));
+            return QueueWorkItem(new UpdateThunk(key, ref value, updateCallback));
         }
 
         public Future<U> QueueWorkItem<U> (IWorkItemWithFuture<T, U> workItem) {
@@ -886,11 +886,11 @@ namespace Squared.Data.Mangler {
         /// <param name="nodeIndex">Contains the index of the BTree node where the search ended.</param>
         /// <param name="valueIndex">Contains the index of the value within the node that matched the key, if a match was found.</param>
         /// <returns>True if the key was found within the tree. False if the key was not found.</returns>
-        private bool FindKey (ref TangleKey key, out long nodeIndex, out uint valueIndex) {
+        private bool FindKey (TangleKey key, out long nodeIndex, out uint valueIndex) {
             long temp;
             uint temp2;
 
-            return FindKey(ref key, false, out nodeIndex, out valueIndex, out temp, out temp2);
+            return FindKey(key, false, out nodeIndex, out valueIndex, out temp, out temp2);
         }
 
         /// <summary>
@@ -902,7 +902,7 @@ namespace Squared.Data.Mangler {
         /// <param name="parentNodeIndex">Contains the index of the BTree node containing the node where the search ended.</param>
         /// <param name="parentValueIndex">Contains the index of the leaf within the parent BTree node that led to the BTree node where the search ended.</param>
         /// <returns>True if the key was found within the tree. False if the key was not found.</returns>
-        private bool FindKey (ref TangleKey key, bool forInsertion, out long nodeIndex, out uint valueIndex, out long parentNodeIndex, out uint parentValueIndex) {
+        private bool FindKey (TangleKey key, bool forInsertion, out long nodeIndex, out uint valueIndex, out long parentNodeIndex, out uint parentValueIndex) {
             uint keyLength = (uint)key.Data.Count;
 
             long nodeCount = BTreeNodeCount;
@@ -1213,7 +1213,7 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private void WriteKey (ref IndexEntry indexEntry, ref TangleKey key) {
+        private void WriteKey (ref IndexEntry indexEntry, TangleKey key) {
             var prefixSize = Math.Min(key.Data.Count, IndexEntry.KeyPrefixSize);
 
             fixed (byte* pPrefix = indexEntry.KeyPrefix)
@@ -1285,7 +1285,7 @@ namespace Squared.Data.Mangler {
             uint valueIndex, parentValueIndex;
 
             Exception serializerException = null;
-            bool foundExisting = FindKey(ref key, true, out nodeIndex, out valueIndex, out parentNodeIndex, out parentValueIndex);
+            bool foundExisting = FindKey(key, true, out nodeIndex, out valueIndex, out parentNodeIndex, out parentValueIndex);
 
             if (!foundExisting) {
                 // Prepare BTree for insert
@@ -1316,7 +1316,7 @@ namespace Squared.Data.Mangler {
                     pEntry->DataLength = 0;
                     pEntry->ExtraDataBytes = 0;
 
-                    WriteKey(ref *pEntry, ref key);
+                    WriteKey(ref *pEntry, key);
                 }
 
                 ArraySegment<byte> segment = default(ArraySegment<byte>);
@@ -1468,12 +1468,12 @@ namespace Squared.Data.Mangler {
             long nodeIndex;
             uint valueIndex;
 
-            if (!FindKey(ref key, out nodeIndex, out valueIndex)) {
+            if (!FindKey(key, out nodeIndex, out valueIndex)) {
                 result = default(FindResult);
                 return false;
             }
 
-            result = new FindResult(this, ref key, nodeIndex, valueIndex);
+            result = new FindResult(this, key, nodeIndex, valueIndex);
             return true;
         }
 
@@ -1481,7 +1481,7 @@ namespace Squared.Data.Mangler {
             long nodeIndex;
             uint valueIndex;
 
-            if (!FindKey(ref key, out nodeIndex, out valueIndex)) {
+            if (!FindKey(key, out nodeIndex, out valueIndex)) {
                 value = default(T);
                 return false;
             }
