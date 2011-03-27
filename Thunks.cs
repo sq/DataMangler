@@ -1,4 +1,22 @@
-﻿using System;
+﻿/*
+The contents of this file are subject to the Mozilla Public License
+Version 1.1 (the "License"); you may not use this file except in
+compliance with the License. You may obtain a copy of the License at
+http://www.mozilla.org/MPL/
+
+Software distributed under the License is distributed on an "AS IS"
+basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
+License for the specific language governing rights and limitations
+under the License.
+
+The Original Code is DataMangler Key-Value Store.
+
+The Initial Developer of the Original Code is Mozilla Corporation.
+
+Original Author: Kevin Gadd (kevin.gadd@gmail.com)
+*/
+
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -318,6 +336,22 @@ namespace Squared.Data.Mangler {
 
                 for (int node = 0; node < nodeCount; node++)
                     position += tangle.InternalGetNodeValues(node, result, position);
+
+                if (position != count)
+                    throw new InvalidDataException();
+            }
+        }
+
+        private class GetAllKeysThunk : ThunkBase<TangleKey[]> {
+            protected override void OnExecute (Tangle<T> tangle, out TangleKey[] result) {
+                var nodeCount = tangle.BTreeNodeCount;
+                var count = tangle.Count;
+                int position = 0;
+
+                result = new TangleKey[count];
+
+                for (int node = 0; node < nodeCount; node++)
+                    position += tangle.InternalGetNodeKeys(node, result, position);
 
                 if (position != count)
                     throw new InvalidDataException();

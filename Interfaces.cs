@@ -24,19 +24,50 @@ using Squared.Task;
 
 namespace Squared.Data.Mangler {
     public interface ITangle : IDisposable {
+        /// <summary>
+        /// Creates a barrier and inserts it into the tangle's work queue. 
+        /// The barrier is signaled when reached and prevents work items following it from being executed as long as it remains closed.
+        /// </summary>
+        /// <param name="createOpened">If true, the barrier is created opened.</param>
+        /// <returns>The created barrier.</returns>
         IBarrier CreateBarrier (bool createOpened);
 
-        IEnumerable<TangleKey> Keys {
-            get;
-        }
+        /// <summary>
+        /// Retrieves a value from the tangle, looking it up via the specified key.
+        /// </summary>
+        /// <param name="key">The key of the value to retrieve.</param>
+        /// <returns>The retrieved value.</returns>
+        IFuture Get (TangleKey key);
+
+        /// <summary>
+        /// Retrieves all the values stored within the tangle, in no particular order.
+        /// </summary>
+        /// <returns>The values stored within the tangle, as an array of type T[].</returns>
+        IFuture GetAllValues ();
+
+        /// <summary>
+        /// Retrieves the keys of all the values stored within the tangle, in no particular order.
+        /// </summary>
+        /// <returns>The keys of the tangle's values.</returns>
+        Future<TangleKey[]> GetAllKeys ();
+
+        /// <summary>
+        /// The number of values stored within the tangle.
+        /// </summary>
         long Count {
             get;
         }
     }
 
     public interface IBarrier : ISchedulable, IDisposable {
+        /// <summary>
+        /// Opens the barrier, allowing work items later in the queue to be executed.
+        /// </summary>
         void Open ();
 
+        /// <summary>
+        /// Returns a future that becomes completed once the barrier has been reached, regardless of whether the barrier is open or closed.
+        /// </summary>
         IFuture Future {
             get;
         }
@@ -55,6 +86,34 @@ namespace Squared.Data.Mangler {
     /// <param name="value">The current value of the item. Change it and return true if you wish to modify the item.</param>
     /// <returns>True to update the item's value, false to abort.</returns>
     public delegate bool DecisionUpdateCallback<T> (ref T value);
+
+    /// <summary>
+    /// Called to generate the right side key for a join.
+    /// </summary>
+    /// <typeparam name="TLeftKey">The type of the left side key(s).</typeparam>
+    /// <typeparam name="TLeft">The type of the left side value(s).</typeparam>
+    /// <typeparam name="TRightKey">The type of the right side key(s).</typeparam>
+    /// <param name="leftKey">The left side key.</param>
+    /// <param name="leftValue">The left side value.</param>
+    /// <returns>The right side key.</returns>
+    public delegate TRightKey JoinKeySelector<TLeftKey, TLeft, TRightKey> 
+        (TLeftKey leftKey, ref TLeft leftValue);
+
+    /// <summary>
+    /// Called to generate the result of a join.
+    /// </summary>
+    /// <typeparam name="TLeftKey">The type of the left side key(s).</typeparam>
+    /// <typeparam name="TLeft">The type of the left side value(s).</typeparam>
+    /// <typeparam name="TRightKey">The type of the right side key(s).</typeparam>
+    /// <typeparam name="TRight">The type of the right side value(s).</typeparam>
+    /// <typeparam name="TOut">The type of the result value(s).</typeparam>
+    /// <param name="leftKey">The left side key.</param>
+    /// <param name="leftValue">The left side value.</param>
+    /// <param name="rightKey">The right side key.</param>
+    /// <param name="rightValue">The right side value.</param>
+    /// <returns>The join result.</returns>
+    public delegate TOut JoinValueSelector<TLeftKey, TLeft, TRightKey, TRight, out TOut> 
+        (TLeftKey leftKey, ref TLeft leftValue, TRightKey rightKey, ref TRight rightValue);
 }
 
 namespace Squared.Data.Mangler.Internal {

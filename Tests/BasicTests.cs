@@ -174,7 +174,8 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set("za", 1));
 
             Assert.AreEqual(
-                new object[] { "aa", "ea", "qa", "za" }, (from k in Tangle.Keys select k.Value).ToArray()
+                new TangleKey[] { "aa", "ea", "qa", "za" }, 
+                Scheduler.WaitFor(Tangle.GetAllKeys())
             );
         }
 
@@ -186,7 +187,8 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set("aa", 1));
 
             Assert.AreEqual(
-                new object[] { "aa", "ea", "qa", "za" }, (from k in Tangle.Keys select k.Value).ToArray()
+                new TangleKey[] { "aa", "ea", "qa", "za" },
+                Scheduler.WaitFor(Tangle.GetAllKeys())
             );
         }
 
