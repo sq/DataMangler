@@ -20,7 +20,7 @@ using System.Runtime.InteropServices;
 using System.IO;
 
 namespace Squared.Data.Mangler.Internal {
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 128)]
     internal unsafe struct BTreeHeader {
         public static readonly uint Size;
 

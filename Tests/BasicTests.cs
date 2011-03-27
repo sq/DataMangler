@@ -563,7 +563,7 @@ namespace Squared.Data.Mangler.Tests {
             var s = "a";
             Scheduler.WaitFor(Tangle.Set("test", s));
 
-            Tangle<string>.UpdateCallback callback = (str) => str + "a";
+            UpdateCallback<string> callback = (str) => str + "a";
 
             for (int i = 0; i < 10; i++) {
                 s = s + "a";
@@ -579,7 +579,7 @@ namespace Squared.Data.Mangler.Tests {
             var s = new String('a', 11);
             Scheduler.WaitFor(Tangle.Set("test", s));
 
-            Tangle<string>.UpdateCallback callback = (str) => str.Substring(0, str.Length - 1);
+            UpdateCallback<string> callback = (str) => str.Substring(0, str.Length - 1);
 
             for (int i = 0; i < 10; i++) {
                 s = s.Substring(0, s.Length - 1);

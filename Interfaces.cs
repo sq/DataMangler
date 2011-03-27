@@ -41,6 +41,20 @@ namespace Squared.Data.Mangler {
             get;
         }
     }
+
+    /// <summary>
+    /// Called to update a value within a tangle.
+    /// </summary>
+    /// <param name="oldValue">The current value of the item.</param>
+    /// <returns>The new value of the item.</returns>
+    public delegate T UpdateCallback<T> (T oldValue);
+
+    /// <summary>
+    /// Called to update a value within a tangle.
+    /// </summary>
+    /// <param name="value">The current value of the item. Change it and return true if you wish to modify the item.</param>
+    /// <returns>True to update the item's value, false to abort.</returns>
+    public delegate bool DecisionUpdateCallback<T> (ref T value);
 }
 
 namespace Squared.Data.Mangler.Internal {
@@ -52,5 +66,9 @@ namespace Squared.Data.Mangler.Internal {
         Future<U> Future {
             get;
         }
+    }
+
+    internal interface IReplaceCallback<T> {
+        bool ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue);
     }
 }

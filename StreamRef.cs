@@ -29,7 +29,7 @@ using System.Collections.Concurrent;
 using Squared.Util;
 
 namespace Squared.Data.Mangler.Internal {
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 256)]
     internal unsafe struct StreamHeader {
         public uint FormatVersion;
         public long DataLength;
