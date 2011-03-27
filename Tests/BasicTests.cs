@@ -373,6 +373,41 @@ namespace Squared.Data.Mangler.Tests {
                 values.OrderBy((v) => v).ToArray()
             );
         }
+
+        [Test]
+        public void TestJoin () {
+            for (int i = 0; i < 8; i++)
+                Scheduler.WaitFor(Tangle.Set(i, i * 2));
+
+            using (var otherTangle = new Tangle<int>(Scheduler, new SubStreamSource(Storage, "2_", false))) {
+                var keys = new List<TangleKey>();
+                for (int i = 0; i < 8; i++) {
+                    var key = new TangleKey(new String((char)('a' + i), 1));
+                    keys.Add(key);
+                    Scheduler.WaitFor(otherTangle.Set(key, i));
+                }
+
+                var joinResult = Scheduler.WaitFor(
+                    otherTangle.Join(
+                        Tangle, keys,
+                        (ref TangleKey leftKey, ref int leftValue, out TangleKey rightKey) => {
+                            rightKey = new TangleKey(leftValue);
+                            return true;
+                        },
+                        (ref TangleKey leftKey, ref int leftValue, ref TangleKey rightKey, ref int rightValue) =>
+                            new { leftKey, leftValue, rightKey, rightValue }
+                    )
+                );
+
+                for (int i = 0; i < 8; i++) {
+                    var item = joinResult[i];
+                    Assert.AreEqual(keys[i], item.leftKey);
+                    Assert.AreEqual(i, item.leftValue);
+                    Assert.AreEqual(i, (int)item.rightKey.Value);
+                    Assert.AreEqual(i * 2, item.rightValue);
+                }
+            }
+        }
     }
 
     [TestFixture]

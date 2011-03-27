@@ -61,6 +61,9 @@ namespace Squared.Data.Mangler {
         }
     }
 
+    public delegate bool JoinKeySelector<TLeft> (ref TangleKey leftKey, ref TLeft leftValue, out TangleKey rightKey);
+    public delegate TOut JoinValueSelector<TLeft, TRight, out TOut> (ref TangleKey leftKey, ref TLeft leftValue, ref TangleKey rightKey, ref TRight rightValue);
+
     /// <summary>
     /// Represents a persistent dictionary keyed by arbitrary byte strings. The values are not stored in any given order on disk, and the values are not required to be resident in memory.
     /// At any given time a portion of the Tangle's values may be resident in memory. If a value is not resident in memory, it will be fetched asynchronously from disk.
@@ -326,6 +329,86 @@ namespace Squared.Data.Mangler {
             }
         }
 
+        private class JoinBarrierThunk : ThunkBase<NoneType> {
+            public readonly ManualResetEventSlim ReadyForJoinSignal = new ManualResetEventSlim(false);
+            public readonly ManualResetEventSlim JoinCompleteSignal = new ManualResetEventSlim(false);
+
+            protected override void OnExecute (Tangle<T> tangle, out NoneType result) {
+                ReadyForJoinSignal.Set();
+                JoinCompleteSignal.Wait();
+                result = default(NoneType);
+            }
+        }
+
+        private class JoinThunk<TRight, TOut> : ThunkBase<TOut[]> {
+            public readonly Tangle<TRight>.JoinBarrierThunk RightBarrier;
+            public readonly Tangle<TRight> Right;
+            public readonly IEnumerable<TangleKey> Keys;
+            public readonly JoinKeySelector<T> KeySelector;
+            public readonly JoinValueSelector<T, TRight, TOut> ValueSelector;
+
+            public JoinThunk (
+                Tangle<TRight>.JoinBarrierThunk rightBarrier,
+                Tangle<TRight> right, IEnumerable<TangleKey> keys, 
+                JoinKeySelector<T> keySelector, 
+                JoinValueSelector<T, TRight, TOut> valueSelector
+            ) {
+                RightBarrier = rightBarrier;
+                Right = right;
+                Keys = keys;
+                KeySelector = keySelector;
+                ValueSelector = valueSelector;
+            }
+
+            protected static int? GetCountFast (IEnumerable<TangleKey> keys) {
+                TangleKey[] array = keys as TangleKey[];
+                ICollection<TangleKey> collection = keys as ICollection<TangleKey>;
+
+                if (array != null)
+                    return array.Length;
+                else if (collection != null)
+                    return collection.Count;
+                else
+                    return null;
+            }
+
+            protected override void OnExecute (Tangle<T> tangle, out TOut[] result) {
+                var keys = Keys;
+
+                var count = GetCountFast(Keys);
+                if (!count.HasValue) {
+                    var array = Keys.ToArray();
+                    keys = array;
+                    count = array.Length;
+                }
+
+                var results = new TOut[count.Value];
+
+                RightBarrier.ReadyForJoinSignal.Wait();
+
+                Parallel.ForEach(
+                    keys, (key, loopState, i) => {
+                        TangleKey leftKey = key, rightKey;
+                        T leftValue;
+                        TRight rightValue;
+                        if (!tangle.InternalGet(ref leftKey, out leftValue))
+                            return;
+                        if (!KeySelector(ref leftKey, ref leftValue, out rightKey))
+                            return;
+                        if (!Right.InternalGet(ref rightKey, out rightValue))
+                            return;
+                        results[i] = ValueSelector(
+                            ref leftKey, ref leftValue, ref rightKey, ref rightValue
+                        );
+                    }
+                );
+
+                result = results;
+
+                RightBarrier.JoinCompleteSignal.Set();
+            }
+        }
+
         private class GetAllValuesThunk : ThunkBase<T[]> {
             protected override void OnExecute (Tangle<T> tangle, out T[] result) {
                 var nodeCount = tangle.BTreeNodeCount;
@@ -581,6 +664,23 @@ namespace Squared.Data.Mangler {
         /// <returns>A future that will contain the retrieved values.</returns>
         public Future<KeyValuePair<TangleKey, T>[]> Get (IEnumerable<TangleKey> keys) {
             return QueueWorkItem(new GetMultipleThunk(keys));
+        }
+
+        /// <summary>
+        /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys,
+        ///  and then uses those values to perform a lookup within a second tangle.
+        /// </summary>
+        /// <returns>A future that will contain the retrieved values.</returns>
+        public Future<TOut[]> Join<TRight, TOut> (
+            Tangle<TRight> right, IEnumerable<TangleKey> keys, 
+            JoinKeySelector<T> keySelector, 
+            JoinValueSelector<T, TRight, TOut> valueSelector
+        ) {
+            var rightBarrier = new Tangle<TRight>.JoinBarrierThunk();
+            right.QueueWorkItem(rightBarrier);
+            return QueueWorkItem(new JoinThunk<TRight, TOut>(
+                rightBarrier, right, keys, keySelector, valueSelector
+            ));
         }
 
         /// <summary>
@@ -1025,13 +1125,6 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private void ReadIndexEntry (long nodeIndex, uint valueIndex, out IndexEntry result) {
-            using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
-                var pEntry = (IndexEntry *)range.Pointer;
-                result = *pEntry;
-            }
-        }
-
         private void ReadData (ref IndexEntry entry, out T value) {
             if (entry.KeyType == 0)
                 throw new InvalidDataException();
@@ -1355,6 +1448,10 @@ namespace Squared.Data.Mangler {
         }
 
         private bool InternalGet (TangleKey key, out T value) {
+            return InternalGet(ref key, out value);
+        }
+
+        private bool InternalGet (ref TangleKey key, out T value) {
             long nodeIndex;
             uint valueIndex;
 
@@ -1363,9 +1460,11 @@ namespace Squared.Data.Mangler {
                 return false;
             }
 
-            IndexEntry indexEntry;
-            ReadIndexEntry(nodeIndex, valueIndex, out indexEntry);
-            ReadData(ref indexEntry, out value);
+            using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
+                var pEntry = (IndexEntry *)range.Pointer;
+                ReadData(ref *pEntry, out value);
+            }
+            
             return true;
         }
 

@@ -169,7 +169,7 @@ namespace Squared.Data.Mangler.Internal {
             public readonly uint Size;
             public readonly MemoryMappedViewAccessor View;
 
-            private bool _IsDisposed;
+            internal bool IsDisposed;
             private int _RefCount;
 
             public CacheEntry (MemoryMappedViewAccessor view, long offset, uint size) {
@@ -177,7 +177,7 @@ namespace Squared.Data.Mangler.Internal {
                 View = view;
                 Offset = offset;
                 Size = size;
-                _IsDisposed = false;
+                IsDisposed = false;
                 _RefCount = 1;
                 Buffer = view.GetSafeBuffer();
                 Pointer = null;
@@ -186,14 +186,14 @@ namespace Squared.Data.Mangler.Internal {
             }
 
             public void AddRef () {
-                if (_IsDisposed)
+                if (IsDisposed)
                     throw new ObjectDisposedException("CacheEntry");
 
                 Interlocked.Increment(ref _RefCount);
             }
 
             public void RemoveRef () {
-                if (_IsDisposed) {
+                if (IsDisposed) {
                     // This can happen if the stream is grown while a reference is held to one of its views.
                     // In this case, we don't want using() blocks and finally handlers to throw exceptions.
 
@@ -212,15 +212,9 @@ namespace Squared.Data.Mangler.Internal {
             }
 
             internal void Release () {
-                _IsDisposed = true;
+                IsDisposed = true;
                 Buffer.ReleasePointer();
                 View.Dispose();
-            }
-
-            public bool IsDisposed {
-                get {
-                    return _IsDisposed;
-                }
             }
         }
 

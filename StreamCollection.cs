@@ -55,10 +55,12 @@ namespace Squared.Data.Mangler {
     public class SubStreamSource : StreamSource {
         private readonly StreamSource Inner;
         public readonly string Prefix;
+        public readonly bool OwnsInnerSource;
 
-        public SubStreamSource (StreamSource inner, string prefix) {
+        public SubStreamSource (StreamSource inner, string prefix, bool ownsInnerSource=true) {
             Inner = inner;
             Prefix = prefix;
+            OwnsInnerSource = ownsInnerSource;
         }
 
         internal override Internal.StreamRef Open (string streamName) {
@@ -66,7 +68,8 @@ namespace Squared.Data.Mangler {
         }
 
         public override void Dispose () {
-            Inner.Dispose();
+            if (OwnsInnerSource)
+                Inner.Dispose();
         }
     }
 
