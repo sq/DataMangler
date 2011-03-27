@@ -46,6 +46,21 @@ namespace Squared.Data.Mangler {
         }
     }
 
+    public class SerializerThrewException : Exception {
+        public readonly TangleKey Key;
+
+        public SerializerThrewException (TangleKey key, Exception innerException)
+            : base("", innerException) {
+                Key = key;
+        }
+
+        public override string Message {
+            get {
+                return String.Format("The data for key '{0}' was not written because the serializer threw an exception.", Key);
+            }
+        }
+    }
+
     /// <summary>
     /// Represents a persistent dictionary keyed by arbitrary byte strings. The values are not stored in any given order on disk, and the values are not required to be resident in memory.
     /// At any given time a portion of the Tangle's values may be resident in memory. If a value is not resident in memory, it will be fetched asynchronously from disk.
@@ -430,6 +445,7 @@ namespace Squared.Data.Mangler {
         private bool _IsDisposed;
         private MemoryStream _SerializationBuffer;
         private StreamRange _HeaderRange;
+        private readonly GetKeyOfEntryFunc _GetKeyOfEntry;
 
         private readonly StreamRef IndexStream;
         private readonly StreamRef KeyStream;
@@ -448,6 +464,8 @@ namespace Squared.Data.Mangler {
 
             Serializer = serializer ?? Defaults<T>.Serializer;
             Deserializer = deserializer ?? Defaults<T>.Deserializer;
+
+            _GetKeyOfEntry = GetKeyOfEntry;
 
             IndexStream = Storage.Open("index");
             KeyStream = Storage.Open("keys");
@@ -476,11 +494,15 @@ namespace Squared.Data.Mangler {
             _HeaderRange = IndexStream.AccessRangeUncached(0, BTreeHeader.Size);
         }
 
-        private ArraySegment<byte> Serialize (ref T value) {
+        /// <summary>
+        /// Serializes a given value so that it can be written to the provided IndexEntry.
+        /// The IndexEntry's KeyLength and KeyOffset values must be filled in and the key must have been written to KeyOffset.
+        /// </summary>
+        private ArraySegment<byte> Serialize (IndexEntry * pEntry, ushort keyType, ref T value) {
             if (_SerializationBuffer == null)
                 _SerializationBuffer = new MemoryStream();
 
-            var context = new SerializationContext(_SerializationBuffer);
+            var context = new SerializationContext(_GetKeyOfEntry, pEntry, keyType, _SerializationBuffer);
             Serializer(ref context, ref value);
             var result = context.Bytes;
 
@@ -783,8 +805,6 @@ namespace Squared.Data.Mangler {
                             //  root in half. Splitting will move a single value up into the new root.
                             pNewRoot->HasLeaves = 1;
                             pNewLeaves[0].NodeIndex = (uint)currentNode;
-                            if (pNewRoot->NumValues != 0)
-                                throw new InvalidDataException();
                         }
 
                         BTreeSplitLeafNode(newRootIndex, 0, currentNode);
@@ -1016,8 +1036,9 @@ namespace Squared.Data.Mangler {
             if (entry.KeyType == 0)
                 throw new InvalidDataException();
 
+            fixed (IndexEntry * pEntry = &entry)
             using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength)) {
-                var context = new DeserializationContext(range.Pointer, entry.DataLength);
+                var context = new DeserializationContext(_GetKeyOfEntry, pEntry, range.Pointer, entry.DataLength);
                 try {
                     Deserializer(ref context, out value);
                 } finally {
@@ -1048,7 +1069,12 @@ namespace Squared.Data.Mangler {
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Write)) {
                 var pEntry = (IndexEntry *)range.Pointer;
 
-                var segment = Serialize(ref value);
+                var keyType = pEntry->KeyType;
+
+                if (keyType == 0)
+                    throw new InvalidDataException();
+
+                var segment = Serialize(pEntry, keyType, ref value);
                 uint count = (uint)segment.Count;
 
                 long? dataOffset = pEntry->DataOffset;
@@ -1057,11 +1083,6 @@ namespace Squared.Data.Mangler {
 
                 if (writeMode == WriteModes.AppendData)
                     dataOffset = DataStream.AllocateSpace(count);
-
-                var keyType = pEntry->KeyType;
-
-                if (keyType == 0)
-                    throw new InvalidDataException();
 
                 pEntry->KeyType = 0;
                 WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
@@ -1135,11 +1156,12 @@ namespace Squared.Data.Mangler {
         }
 
         private bool InternalSet (TangleKey key, ref T value, IReplaceCallback replacementCallback) {
-            long? keyOffset = null, dataOffset = null;
+            long? dataOffset = null;
 
             long nodeIndex, parentNodeIndex;
             uint valueIndex, parentValueIndex;
 
+            Exception serializerException = null;
             bool foundExisting = FindKey(ref key, true, out nodeIndex, out valueIndex, out parentNodeIndex, out parentValueIndex);
 
             if (!foundExisting) {
@@ -1160,9 +1182,26 @@ namespace Squared.Data.Mangler {
                     }
 
                     pEntry->KeyType = 0;
+                } else {
+                    pEntry->KeyType = 0;
+                    if (key.Data.Count > IndexEntry.KeyPrefixSize)
+                        pEntry->KeyOffset = (uint)KeyStream.AllocateSpace((uint)key.Data.Count).Value;
+                    else
+                        pEntry->KeyOffset = 0;
+                    pEntry->KeyLength = (ushort)key.Data.Count;
+                    pEntry->DataOffset = 0;
+                    pEntry->DataLength = 0;
+                    pEntry->ExtraDataBytes = 0;
+
+                    WriteKey(ref *pEntry, ref key);
                 }
 
-                var segment = Serialize(ref value);
+                ArraySegment<byte> segment = default(ArraySegment<byte>);
+                try {
+                    segment = Serialize(pEntry, key.OriginalTypeId, ref value);
+                } catch (Exception ex) {
+                    serializerException = ex;
+                }
 
                 WriteModes writeMode;
                 if (foundExisting) {
@@ -1172,9 +1211,6 @@ namespace Squared.Data.Mangler {
                         writeMode = WriteModes.ReplaceData;
                 } else {
                     writeMode = WriteModes.AppendDataAndKey;
-
-                    if (key.Data.Count > IndexEntry.KeyPrefixSize)
-                        keyOffset = KeyStream.AllocateSpace((uint)key.Data.Count);
                 }
 
                 if (writeMode != WriteModes.ReplaceData)
@@ -1183,16 +1219,9 @@ namespace Squared.Data.Mangler {
                     dataOffset = pEntry->DataOffset;
 
                 if (writeMode == WriteModes.AppendDataAndKey) {
-                    *pEntry = new IndexEntry {
-                        DataOffset = (uint)dataOffset.GetValueOrDefault(0),
-                        KeyOffset = (uint)keyOffset.GetValueOrDefault(0),
-                        DataLength = (uint)segment.Count,
-                        KeyLength = (ushort)key.Data.Count,
-                        ExtraDataBytes = 0,
-                        KeyType = 0
-                    };
-
-                    WriteKey(ref *pEntry, ref key);
+                    pEntry->DataOffset = (uint)dataOffset.GetValueOrDefault(0);
+                    pEntry->DataLength = (uint)segment.Count;
+                    pEntry->ExtraDataBytes = 0;
                 }
 
                 WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
@@ -1216,6 +1245,9 @@ namespace Squared.Data.Mangler {
                 Interlocked.Increment(ref pHeader->ItemCount);
             }
 
+            if (serializerException != null)
+                throw new SerializerThrewException(key, serializerException);
+
             return true;
         }
 
@@ -1235,12 +1267,17 @@ namespace Squared.Data.Mangler {
             var sb = new StringBuilder();
             var pValues = (IndexEntry *)(((byte *)pNode) + BTreeNode.OffsetOfValues);
             var pLeaves = (BTreeLeaf *)(((byte *)pNode) + BTreeNode.OffsetOfLeaves);
+            TangleKey key;
 
             for (int i = 0; i < pNode->NumValues; i++) {
+                var keyType = pValues[i].KeyType;
+                if (!GetKeyOfEntry(&pValues[i], keyType, out key))
+                    throw new InvalidDataException();
+
                 if (pNode->HasLeaves == 1)
-                    sb.AppendFormat("{1} {2} ", pLeaves[i].NodeIndex, StringifyNode(pLeaves[i].NodeIndex), GetKeyOfEntry(&pValues[i]));
+                    sb.AppendFormat("{1} {2} ", pLeaves[i].NodeIndex, StringifyNode(pLeaves[i].NodeIndex), key);
                 else
-                    sb.AppendFormat("{0} ", GetKeyOfEntry(&pValues[i]));
+                    sb.AppendFormat("{0} ", key);
             }
 
             if (pNode->HasLeaves == 1)
@@ -1253,7 +1290,12 @@ namespace Squared.Data.Mangler {
             return StringifyNode(BTreeRootIndex);
         }
 
-        private TangleKey GetKeyOfEntry (IndexEntry* pEntry) {
+        private bool GetKeyOfEntry (IndexEntry * pEntry, ushort keyType, out TangleKey key) {
+            if (keyType == 0) {
+                key = default(TangleKey);
+                return false;
+            }
+
             var buffer = ImmutableArrayPool<byte>.Allocate(pEntry->KeyLength);
 
             if (pEntry->KeyLength <= IndexEntry.KeyPrefixSize) {
@@ -1266,14 +1308,19 @@ namespace Squared.Data.Mangler {
                     ReadBytes(keyRange.Pointer, 0, buffer.Array, buffer.Offset, pEntry->KeyLength);
             }
 
-            return new TangleKey(buffer, pEntry->KeyType);
+            key = new TangleKey(buffer, keyType);
+            return true;
         }
 
         private TangleKey GetKeyOfNodeValue (long nodeIndex, uint valueIndex) {
             using (var range = AccessBTreeValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
                 var pEntry = (IndexEntry *)range.Pointer;
 
-                return GetKeyOfEntry(pEntry);
+                TangleKey result;
+                if (!GetKeyOfEntry(pEntry, pEntry->KeyType, out result))
+                    throw new InvalidDataException();
+
+                return result;
             }
         }
 

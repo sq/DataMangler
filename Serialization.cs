@@ -36,12 +36,24 @@ namespace Squared.Data.Mangler {
     public class TangleDeserializerAttribute : Attribute {
     }
 
+    internal unsafe delegate bool GetKeyOfEntryFunc (IndexEntry * pEntry, ushort keyType, out TangleKey key);
+
     public unsafe struct SerializationContext {
         private bool BytesProvided, StreamInUse;
         private ArraySegment<byte> _Bytes;
         private readonly MemoryStream _Stream;
-
-        public SerializationContext (MemoryStream stream) {
+        private readonly IndexEntry * IndexEntryPointer;
+        private readonly ushort KeyType;
+        private readonly GetKeyOfEntryFunc GetKeyOfEntry;
+        private TangleKey _Key;
+        private bool _KeyCached;
+        
+        internal SerializationContext (GetKeyOfEntryFunc getKeyOfEntry, IndexEntry * pEntry, ushort keyType, MemoryStream stream) {
+            GetKeyOfEntry = getKeyOfEntry;
+            IndexEntryPointer = pEntry;
+            KeyType = keyType;
+            _Key = default(TangleKey);
+            _KeyCached = false;
             _Stream = stream;
             BytesProvided = false;
             StreamInUse = false;
@@ -60,6 +72,18 @@ namespace Squared.Data.Mangler {
 
             BytesProvided = true;
             _Bytes = bytes;
+        }
+
+        public TangleKey Key {
+            get {
+                if (!_KeyCached)
+                    _KeyCached = GetKeyOfEntry(IndexEntryPointer, KeyType, out _Key);
+                
+                if (!_KeyCached)
+                    throw new InvalidDataException();
+
+                return _Key;
+            }
         }
 
         public Stream Stream {
@@ -94,7 +118,7 @@ namespace Squared.Data.Mangler {
         }
 
         public void SerializeValue<U> (Serializer<U> serializer, ref U input) {
-            var subContext = new SerializationContext(_Stream);
+            var subContext = new SerializationContext(GetKeyOfEntry, IndexEntryPointer, KeyType, _Stream);
             serializer(ref subContext, ref input);
             if (subContext.BytesProvided)
                 _Stream.Write(subContext._Bytes.Array, subContext._Bytes.Offset, subContext._Bytes.Count);
@@ -103,14 +127,34 @@ namespace Squared.Data.Mangler {
 
     public unsafe struct DeserializationContext {
         private UnmanagedMemoryStream _Stream;
+        private readonly IndexEntry * IndexEntryPointer;
+        private readonly GetKeyOfEntryFunc GetKeyOfEntry;
+        private TangleKey _Key;
+        private bool _KeyCached;
 
-        public readonly byte * Source;
+        public readonly byte* Source;
         public readonly uint SourceLength;
 
-        public DeserializationContext (byte * source, uint sourceLength) {
+        internal DeserializationContext (GetKeyOfEntryFunc getKeyOfEntry, IndexEntry * pEntry, byte * source, uint sourceLength) {
+            GetKeyOfEntry = getKeyOfEntry;
+            _Key = default(TangleKey);
+            _KeyCached = false;
+            IndexEntryPointer = pEntry;
             Source = source;
             SourceLength = sourceLength;
             _Stream = null;
+        }
+
+        public TangleKey Key {
+            get {
+                if (!_KeyCached)
+                    _KeyCached = GetKeyOfEntry(IndexEntryPointer, IndexEntryPointer->KeyType, out _Key);
+                
+                if (!_KeyCached)
+                    throw new InvalidDataException();
+
+                return _Key;
+            }
         }
 
         public UnmanagedMemoryStream Stream {
@@ -135,7 +179,7 @@ namespace Squared.Data.Mangler {
         }
 
         public void DeserializeValue<U> (Deserializer<U> deserializer, uint offset, uint length, out U output) {
-            var subContext = new DeserializationContext(Source + offset, length);
+            var subContext = new DeserializationContext(GetKeyOfEntry, IndexEntryPointer, Source + offset, length);
             try {
                 deserializer(ref subContext, out output);
             } finally {
@@ -211,29 +255,30 @@ namespace Squared.Data.Mangler {
 
         public static readonly int Capacity;
 
-        [ThreadStatic]
-        private static State Data;
+        private readonly static ThreadLocal<State> ThreadLocal = new ThreadLocal<State>(AllocateNewBuffer);
 
         static ImmutableArrayPool () {
             var itemSize = Marshal.SizeOf(typeof(T));
             Capacity = MaxSizeBytes / itemSize;
         }
 
-        static void AllocateNewBuffer () {
-            Data = new State(new T[Capacity]);
+        static State AllocateNewBuffer () {
+            return new State(new T[Capacity]);
         }
 
         public static ArraySegment<T> Allocate (int count) {
             if (count > Capacity)
                 return new ArraySegment<T>(new T[count], 0, count);
 
-            if ((Data == null) || (Data.ElementsUsed >= Capacity - count))
-                AllocateNewBuffer();
+            var data = ThreadLocal.Value;
 
-            var offset = Data.ElementsUsed;
-            Data.ElementsUsed += count;
+            if ((data == null) || (data.ElementsUsed >= Capacity - count))
+                data = ThreadLocal.Value = AllocateNewBuffer();
 
-            return new ArraySegment<T>(Data.Buffer, offset, count);
+            var offset = data.ElementsUsed;
+            data.ElementsUsed += count;
+
+            return new ArraySegment<T>(data.Buffer, offset, count);
         }
     }
 }
