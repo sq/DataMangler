@@ -322,6 +322,8 @@ namespace Squared.Data.Mangler {
                         T value;
                         if (tangle.InternalGet(key, out value))
                             results[i] = new KeyValuePair<TangleKey, T>(key, value);
+                        else
+                            results[i] = new KeyValuePair<TangleKey, T>(key, default(T));
                     }
                 );
 

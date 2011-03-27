@@ -17,6 +17,7 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 */
 
 using System;
+using System.Collections.Generic;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.IO;
@@ -112,11 +113,17 @@ namespace Squared.Data.Mangler.Internal {
             return _GetPointerOffset(accessor);
         }
 
-        internal static ArraySegment<byte> GetSegment (this MemoryStream stream) {
+        public static ArraySegment<byte> GetSegment (this MemoryStream stream) {
             if (stream.Length >= int.MaxValue)
                 throw new InvalidDataException();
 
             return new ArraySegment<byte>(stream.GetBuffer(), 0, (int)stream.Length);
+        }
+
+        public static IEnumerable<T> AsEnumerable<T> (this ArraySegment<T> segment) {
+            var a = segment.Array;
+            for (int i = 0, c = segment.Count, o = segment.Offset; i < c; i++)
+                yield return a[i + o];
         }
     }
 

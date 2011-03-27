@@ -353,6 +353,17 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [Test]
+        public void TestMultiGetMissingValuesStillProduceAKeyValuePair () {
+            var fMultiGet = Tangle.Get(from i in new[] { 1, 2 } select new TangleKey(i));
+            var results = Scheduler.WaitFor(fMultiGet);
+
+            Assert.AreEqual(1, (int)results[0].Key.Value);
+            Assert.AreEqual(2, (int)results[1].Key.Value);
+            Assert.AreEqual(default(int), results[0].Value);
+            Assert.AreEqual(default(int), results[1].Value);
+        }
+
+        [Test]
         public void TestGetAllValues () {
             const int numValues = 100000;
 
