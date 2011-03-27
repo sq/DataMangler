@@ -61,8 +61,8 @@ namespace Squared.Data.Mangler {
         }
     }
 
-    public delegate TangleKey? JoinKeySelector<TLeft> (TangleKey leftKey, ref TLeft leftValue);
-    public delegate TOut JoinValueSelector<TLeft, TRight, out TOut> (TangleKey leftKey, ref TLeft leftValue, TangleKey rightKey, ref TRight rightValue);
+    public delegate TangleKey? JoinKeySelector<TLeftKey, TLeft> (TLeftKey leftKey, ref TLeft leftValue);
+    public delegate TOut JoinValueSelector<TLeftKey, TLeft, TRight, out TOut> (TLeftKey leftKey, ref TLeft leftValue, TangleKey rightKey, ref TRight rightValue);
 
     /// <summary>
     /// Represents a persistent dictionary keyed by arbitrary byte strings. The values are not stored in any given order on disk, and the values are not required to be resident in memory.
@@ -286,16 +286,18 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private class GetMultipleThunk : ThunkBase<KeyValuePair<TangleKey, T>[]> {
-            public readonly IEnumerable<TangleKey> Keys;
+        private class GetMultipleThunk<TKey> : ThunkBase<KeyValuePair<TKey, T>[]> {
+            public readonly IEnumerable<TKey> Keys;
+            public readonly Func<TKey, TangleKey> KeyConverter;
 
-            public GetMultipleThunk (IEnumerable<TangleKey> keys) {
+            public GetMultipleThunk (IEnumerable<TKey> keys) {
                 Keys = keys;
+                KeyConverter = TangleKey.GetConverter<TKey>();
             }
 
-            protected static int? GetCountFast (IEnumerable<TangleKey> keys) {
-                TangleKey[] array = keys as TangleKey[];
-                ICollection<TangleKey> collection = keys as ICollection<TangleKey>;
+            protected static int? GetCountFast (IEnumerable<TKey> keys) {
+                TKey[] array = keys as TKey[];
+                ICollection<TKey> collection = keys as ICollection<TKey>;
 
                 if (array != null)
                     return array.Length;
@@ -305,7 +307,7 @@ namespace Squared.Data.Mangler {
                     return null;
             }
 
-            protected override void OnExecute (Tangle<T> tangle, out KeyValuePair<TangleKey, T>[] result) {
+            protected override void OnExecute (Tangle<T> tangle, out KeyValuePair<TKey, T>[] result) {
                 var keys = Keys;
 
                 var count = GetCountFast(Keys);
@@ -315,15 +317,15 @@ namespace Squared.Data.Mangler {
                     count = array.Length;
                 }
 
-                var results = new KeyValuePair<TangleKey, T>[count.Value];
+                var results = new KeyValuePair<TKey, T>[count.Value];
 
                 Parallel.ForEach(
-                    keys, (key, loopState, i) => {
+                    keys, (rawKey, loopState, i) => {
                         T value;
-                        if (tangle.InternalGet(key, out value))
-                            results[i] = new KeyValuePair<TangleKey, T>(key, value);
+                        if (tangle.InternalGet(KeyConverter(rawKey), out value))
+                            results[i] = new KeyValuePair<TKey, T>(rawKey, value);
                         else
-                            results[i] = new KeyValuePair<TangleKey, T>(key, default(T));
+                            results[i] = new KeyValuePair<TKey, T>(rawKey, default(T));
                     }
                 );
 
@@ -342,29 +344,32 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private class JoinThunk<TRight, TOut> : ThunkBase<TOut[]> {
+        private class JoinThunk<TLeftKey, TRight, TOut> : ThunkBase<TOut[]> {
             public readonly Tangle<TRight>.JoinBarrierThunk RightBarrier;
             public readonly Tangle<TRight> Right;
-            public readonly IEnumerable<TangleKey> Keys;
-            public readonly JoinKeySelector<T> KeySelector;
-            public readonly JoinValueSelector<T, TRight, TOut> ValueSelector;
+            public readonly IEnumerable<TLeftKey> Keys;
+            public readonly JoinKeySelector<TLeftKey, T> KeySelector;
+            public readonly JoinValueSelector<TLeftKey, T, TRight, TOut> ValueSelector;
+            public readonly Func<TLeftKey, TangleKey> LeftKeyConverter;
 
             public JoinThunk (
                 Tangle<TRight>.JoinBarrierThunk rightBarrier,
-                Tangle<TRight> right, IEnumerable<TangleKey> keys, 
-                JoinKeySelector<T> keySelector, 
-                JoinValueSelector<T, TRight, TOut> valueSelector
+                Tangle<TRight> right, 
+                IEnumerable<TLeftKey> keys, 
+                JoinKeySelector<TLeftKey, T> keySelector, 
+                JoinValueSelector<TLeftKey, T, TRight, TOut> valueSelector
             ) {
                 RightBarrier = rightBarrier;
                 Right = right;
                 Keys = keys;
                 KeySelector = keySelector;
                 ValueSelector = valueSelector;
+                LeftKeyConverter = TangleKey.GetConverter<TLeftKey>();
             }
 
-            protected static int? GetCountFast (IEnumerable<TangleKey> keys) {
-                TangleKey[] array = keys as TangleKey[];
-                ICollection<TangleKey> collection = keys as ICollection<TangleKey>;
+            protected static int? GetCountFast (IEnumerable<TLeftKey> keys) {
+                TLeftKey[] array = keys as TLeftKey[];
+                ICollection<TLeftKey> collection = keys as ICollection<TLeftKey>;
 
                 if (array != null)
                     return array.Length;
@@ -393,7 +398,7 @@ namespace Squared.Data.Mangler {
                         T leftValue;
                         TRight rightValue;
 
-                        if (!tangle.InternalGet(leftKey, out leftValue))
+                        if (!tangle.InternalGet(LeftKeyConverter(leftKey), out leftValue))
                             return;
 
                         var rightKey = KeySelector(leftKey, ref leftValue);
@@ -669,8 +674,8 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <param name="keys">The keys to look up in this tangle.</param>
         /// <returns>A future that will contain the retrieved values.</returns>
-        public Future<KeyValuePair<TangleKey, T>[]> Get (IEnumerable<TangleKey> keys) {
-            return QueueWorkItem(new GetMultipleThunk(keys));
+        public Future<KeyValuePair<TKey, T>[]> Select<TKey> (IEnumerable<TKey> keys) {
+            return QueueWorkItem(new GetMultipleThunk<TKey>(keys));
         }
 
         /// <summary>
@@ -682,14 +687,14 @@ namespace Squared.Data.Mangler {
         /// <param name="keySelector">A delegate that takes a key/value pair from this tangle and produces a key to use for a lookup in the other tangle.</param>
         /// <param name="valueSelector">A delegate that takes key/value pairs from both tangles and produces a result for the join.</param>
         /// <returns>A future that will contain the join results.</returns>
-        public Future<TOut[]> Join<TRight, TOut> (
-            Tangle<TRight> right, IEnumerable<TangleKey> keys, 
-            JoinKeySelector<T> keySelector, 
-            JoinValueSelector<T, TRight, TOut> valueSelector
+        public Future<TOut[]> Join<TLeftKey, TRight, TOut> (
+            Tangle<TRight> right, IEnumerable<TLeftKey> keys,
+            JoinKeySelector<TLeftKey, T> keySelector,
+            JoinValueSelector<TLeftKey, T, TRight, TOut> valueSelector
         ) {
             var rightBarrier = new Tangle<TRight>.JoinBarrierThunk();
             right.QueueWorkItem(rightBarrier);
-            return QueueWorkItem(new JoinThunk<TRight, TOut>(
+            return QueueWorkItem(new JoinThunk<TLeftKey, TRight, TOut>(
                 rightBarrier, right, keys, keySelector, valueSelector
             ));
         }
@@ -702,15 +707,15 @@ namespace Squared.Data.Mangler {
         /// <param name="right">The tangle to join against.</param>
         /// <param name="keySelector">A delegate that takes a value from this tangle and produces a key to use for a lookup in the other tangle.</param>
         /// <returns>A future that will contain the join results.</returns>
-        public Future<KeyValuePair<T, TRight>[]> Join<TRight> (
-            Tangle<TRight> right, IEnumerable<TangleKey> keys,
+        public Future<KeyValuePair<T, TRight>[]> Join<TLeftKey, TRight> (
+            Tangle<TRight> right, IEnumerable<TLeftKey> keys,
             Func<T, TangleKey> keySelector
         ) {
             return Join(
                 right, keys,
-                (TangleKey leftKey, ref T leftValue)
+                (TLeftKey leftKey, ref T leftValue)
                     => keySelector(leftValue),
-                (TangleKey leftKey, ref T leftValue, TangleKey rightKey, ref TRight rightValue)
+                (TLeftKey leftKey, ref T leftValue, TangleKey rightKey, ref TRight rightValue)
                     => new KeyValuePair<T, TRight>(leftValue, rightValue)
             );
         }

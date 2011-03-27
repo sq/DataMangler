@@ -324,12 +324,12 @@ namespace Squared.Data.Mangler.Tests {
 
             Scheduler.WaitFor(WriteLotsOfValuesInBatch(Tangle, numValues, -1));
 
-            var keys = new List<TangleKey>();
+            var keys = new List<int>();
             for (int i = 0; i < numValues; i += 2)
-                keys.Add(new TangleKey(i));
+                keys.Add(i);
 
             long startTime = Time.Ticks;
-            var fMultiGet = Tangle.Get(keys);
+            var fMultiGet = Tangle.Select(keys);
             var results = Scheduler.WaitFor(fMultiGet);
             decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
             Console.WriteLine(
@@ -340,25 +340,24 @@ namespace Squared.Data.Mangler.Tests {
             Assert.AreEqual(keys.Count, results.Count());
 
             Assert.AreEqual(
-                keys.OrderBy((k) => (int)k.Value)
-                    .Select((k) => (int)k.Value)
+                keys.OrderBy((k) => k)
                     .ToArray(), 
-                results.OrderBy((kvp) => (int)kvp.Key.Value)
-                    .Select((kvp) => (int)kvp.Key.Value)
+                results.OrderBy((kvp) => kvp.Key)
+                    .Select((kvp) => kvp.Key)
                     .ToArray()
             );
 
             foreach (var kvp in results)
-                Assert.AreEqual((int)kvp.Key.Value, kvp.Value);
+                Assert.AreEqual((int)kvp.Key, kvp.Value);
         }
 
         [Test]
         public void TestMultiGetMissingValuesStillProduceAKeyValuePair () {
-            var fMultiGet = Tangle.Get(from i in new[] { 1, 2 } select new TangleKey(i));
+            var fMultiGet = Tangle.Select(new[] { 1, 2 });
             var results = Scheduler.WaitFor(fMultiGet);
 
-            Assert.AreEqual(1, (int)results[0].Key.Value);
-            Assert.AreEqual(2, (int)results[1].Key.Value);
+            Assert.AreEqual(1, results[0].Key);
+            Assert.AreEqual(2, results[1].Key);
             Assert.AreEqual(default(int), results[0].Value);
             Assert.AreEqual(default(int), results[1].Value);
         }
@@ -391,9 +390,9 @@ namespace Squared.Data.Mangler.Tests {
                 Scheduler.WaitFor(Tangle.Set(i, i * 2));
 
             using (var otherTangle = new Tangle<int>(Scheduler, new SubStreamSource(Storage, "2_", false))) {
-                var keys = new List<TangleKey>();
+                var keys = new List<string>();
                 for (int i = 0; i < 8; i++) {
-                    var key = new TangleKey(new String((char)('a' + i), 1));
+                    var key = new String((char)('a' + i), 1);
                     keys.Add(key);
                     Scheduler.WaitFor(otherTangle.Set(key, i));
                 }
@@ -401,9 +400,9 @@ namespace Squared.Data.Mangler.Tests {
                 var joinResult = Scheduler.WaitFor(
                     otherTangle.Join(
                         Tangle, keys,
-                        (TangleKey leftKey, ref int leftValue) =>
+                        (string leftKey, ref int leftValue) =>
                             new TangleKey(leftValue),
-                        (TangleKey leftKey, ref int leftValue, TangleKey rightKey, ref int rightValue) =>
+                        (string leftKey, ref int leftValue, TangleKey rightKey, ref int rightValue) =>
                             new { leftKey, leftValue, rightKey, rightValue }
                     )
                 );
@@ -424,9 +423,9 @@ namespace Squared.Data.Mangler.Tests {
                 Scheduler.WaitFor(Tangle.Set(i, i * 2));
 
             using (var otherTangle = new Tangle<int>(Scheduler, new SubStreamSource(Storage, "2_", false))) {
-                var keys = new List<TangleKey>();
+                var keys = new List<string>();
                 for (int i = 0; i < 8; i++) {
-                    var key = new TangleKey(new String((char)('a' + i), 1));
+                    var key = new String((char)('a' + i), 1);
                     keys.Add(key);
                     Scheduler.WaitFor(otherTangle.Set(key, i));
                 }

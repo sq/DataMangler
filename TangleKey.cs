@@ -18,16 +18,20 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 
 using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 using System.Text;
 using System.IO;
 using Squared.Data.Mangler.Internal;
 
 namespace Squared.Data.Mangler {
     public struct TangleKey : IComparable<TangleKey>, IEquatable<TangleKey> {
+        private static readonly Dictionary<Type, Delegate> Converters = new Dictionary<Type, Delegate>();
         private static readonly Dictionary<ushort, Type> TypeIdToType = new Dictionary<ushort, Type>();
         private static readonly Dictionary<Type, ushort> TypeToTypeId = new Dictionary<Type, ushort>();
 
         static TangleKey () {
+            Converters[typeof(TangleKey)] = (Func<TangleKey, TangleKey>)((key) => key);
+
             RegisterType<string>();
             RegisterType<byte[]>();
             RegisterType<uint>();
@@ -44,6 +48,24 @@ namespace Squared.Data.Mangler {
             ushort id = (byte)(TypeToTypeId.Count + 1);
             TypeToTypeId[type] = id;
             TypeIdToType[id] = type;
+
+            {
+                var constructor = typeof(TangleKey).GetConstructor(new Type[] { type });
+                var parameter = Expression.Parameter(type, "value");
+                var expression = Expression.New(constructor, new[] { parameter });
+                var converterType = typeof(Func<T, TangleKey>);
+                var converterExpression = Expression.Lambda(converterType, expression, parameter);
+                var converter = converterExpression.Compile();
+                Converters[type] = converter;
+            }
+        }
+
+        public static Func<T, TangleKey> GetConverter<T> () {
+            Delegate converter;
+            if (!Converters.TryGetValue(typeof(T), out converter))
+                throw new InvalidOperationException(String.Format("Type '{0}' is not convertible to TangleKey", typeof(T).Name));
+
+            return (Func<T, TangleKey>)converter;
         }
 
         public readonly ushort OriginalTypeId;

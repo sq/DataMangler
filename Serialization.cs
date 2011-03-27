@@ -251,19 +251,15 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        public const int MaxSizeBytes = 64 * 1024;
+        public const int MaxSizeBytes = 256 * 1024;
 
         public static readonly int Capacity;
 
-        private readonly static ThreadLocal<State> ThreadLocal = new ThreadLocal<State>(AllocateNewBuffer);
+        private readonly static ThreadLocal<State> ThreadLocal = new ThreadLocal<State>();
 
         static ImmutableArrayPool () {
             var itemSize = Marshal.SizeOf(typeof(T));
             Capacity = MaxSizeBytes / itemSize;
-        }
-
-        static State AllocateNewBuffer () {
-            return new State(new T[Capacity]);
         }
 
         public static ArraySegment<T> Allocate (int count) {
@@ -272,8 +268,9 @@ namespace Squared.Data.Mangler {
 
             var data = ThreadLocal.Value;
 
-            if ((data == null) || (data.ElementsUsed >= Capacity - count))
-                data = ThreadLocal.Value = AllocateNewBuffer();
+            if ((data == null) || (data.ElementsUsed >= Capacity - count)) {
+                data = ThreadLocal.Value = new State(new T[Capacity]);
+            }
 
             var offset = data.ElementsUsed;
             data.ElementsUsed += count;
