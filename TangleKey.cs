@@ -40,7 +40,7 @@ namespace Squared.Data.Mangler {
             RegisterType<long>();
         }
 
-        private static void RegisterType<T> () {
+        private static void RegisterType<T> (bool autoConverter = true) {
             if (TypeToTypeId.Count >= (ushort.MaxValue - 2))
                 throw new InvalidOperationException("Too many registered types");
 
@@ -49,7 +49,7 @@ namespace Squared.Data.Mangler {
             TypeToTypeId[type] = id;
             TypeIdToType[id] = type;
 
-            {
+            if (autoConverter) {
                 var constructor = typeof(TangleKey).GetConstructor(new Type[] { type });
                 var parameter = Expression.Parameter(type, "value");
                 var expression = Expression.New(constructor, new[] { parameter });
@@ -58,6 +58,11 @@ namespace Squared.Data.Mangler {
                 var converter = converterExpression.Compile();
                 Converters[type] = converter;
             }
+        }
+
+        public static void RegisterKeyType<T> (Func<T, TangleKey> converter) {
+            RegisterType<T>(autoConverter: false);
+            Converters[typeof(T)] = converter;
         }
 
         public static Func<T, TangleKey> GetConverter<T> () {

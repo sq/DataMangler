@@ -400,9 +400,9 @@ namespace Squared.Data.Mangler.Tests {
                 var joinResult = Scheduler.WaitFor(
                     otherTangle.Join(
                         Tangle, keys,
-                        (string leftKey, ref int leftValue) =>
-                            new TangleKey(leftValue),
-                        (string leftKey, ref int leftValue, TangleKey rightKey, ref int rightValue) =>
+                        (string leftKey, ref int leftValue) => 
+                            leftValue,
+                        (string leftKey, ref int leftValue, int rightKey, ref int rightValue) =>
                             new { leftKey, leftValue, rightKey, rightValue }
                     )
                 );
@@ -411,7 +411,7 @@ namespace Squared.Data.Mangler.Tests {
                     var item = joinResult[i];
                     Assert.AreEqual(keys[i], item.leftKey);
                     Assert.AreEqual(i, item.leftValue);
-                    Assert.AreEqual(i, (int)item.rightKey.Value);
+                    Assert.AreEqual(i, item.rightKey);
                     Assert.AreEqual(i * 2, item.rightValue);
                 }
             }
@@ -433,7 +433,7 @@ namespace Squared.Data.Mangler.Tests {
                 var joinResult = Scheduler.WaitFor(
                     otherTangle.Join(
                         Tangle, keys,
-                        (leftValue) => new TangleKey(leftValue)
+                        (leftValue) => leftValue
                     )
                 );
 
