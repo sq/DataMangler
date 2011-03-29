@@ -36,21 +36,21 @@ namespace Squared.Data.Mangler {
     public class TangleDeserializerAttribute : Attribute {
     }
 
-    internal unsafe delegate bool GetKeyOfEntryFunc (IndexEntry * pEntry, ushort keyType, out TangleKey key);
+    internal unsafe delegate bool GetKeyOfEntryFunc (BTreeValue * pEntry, ushort keyType, out TangleKey key);
 
     public unsafe struct SerializationContext {
         private bool BytesProvided, StreamInUse;
         private ArraySegment<byte> _Bytes;
         private readonly MemoryStream _Stream;
-        private readonly IndexEntry * IndexEntryPointer;
+        private readonly BTreeValue * ValuePointer;
         private readonly ushort KeyType;
         private readonly GetKeyOfEntryFunc GetKeyOfEntry;
         private TangleKey _Key;
         private bool _KeyCached;
         
-        internal SerializationContext (GetKeyOfEntryFunc getKeyOfEntry, IndexEntry * pEntry, ushort keyType, MemoryStream stream) {
+        internal SerializationContext (GetKeyOfEntryFunc getKeyOfEntry, BTreeValue * pEntry, ushort keyType, MemoryStream stream) {
             GetKeyOfEntry = getKeyOfEntry;
-            IndexEntryPointer = pEntry;
+            ValuePointer = pEntry;
             KeyType = keyType;
             _Key = default(TangleKey);
             _KeyCached = false;
@@ -77,7 +77,7 @@ namespace Squared.Data.Mangler {
         public TangleKey Key {
             get {
                 if (!_KeyCached)
-                    _KeyCached = GetKeyOfEntry(IndexEntryPointer, KeyType, out _Key);
+                    _KeyCached = GetKeyOfEntry(ValuePointer, KeyType, out _Key);
                 
                 if (!_KeyCached)
                     throw new InvalidDataException();
@@ -118,7 +118,7 @@ namespace Squared.Data.Mangler {
         }
 
         public void SerializeValue<U> (Serializer<U> serializer, ref U input) {
-            var subContext = new SerializationContext(GetKeyOfEntry, IndexEntryPointer, KeyType, _Stream);
+            var subContext = new SerializationContext(GetKeyOfEntry, ValuePointer, KeyType, _Stream);
             serializer(ref subContext, ref input);
             if (subContext.BytesProvided)
                 _Stream.Write(subContext._Bytes.Array, subContext._Bytes.Offset, subContext._Bytes.Count);
@@ -127,7 +127,7 @@ namespace Squared.Data.Mangler {
 
     public unsafe struct DeserializationContext {
         private UnmanagedMemoryStream _Stream;
-        private readonly IndexEntry * IndexEntryPointer;
+        private readonly BTreeValue * ValuePointer;
         private readonly GetKeyOfEntryFunc GetKeyOfEntry;
         private TangleKey _Key;
         private bool _KeyCached;
@@ -135,11 +135,11 @@ namespace Squared.Data.Mangler {
         public readonly byte* Source;
         public readonly uint SourceLength;
 
-        internal DeserializationContext (GetKeyOfEntryFunc getKeyOfEntry, IndexEntry * pEntry, byte * source, uint sourceLength) {
+        internal DeserializationContext (GetKeyOfEntryFunc getKeyOfEntry, BTreeValue * pEntry, byte * source, uint sourceLength) {
             GetKeyOfEntry = getKeyOfEntry;
             _Key = default(TangleKey);
             _KeyCached = false;
-            IndexEntryPointer = pEntry;
+            ValuePointer = pEntry;
             Source = source;
             SourceLength = sourceLength;
             _Stream = null;
@@ -148,7 +148,7 @@ namespace Squared.Data.Mangler {
         public TangleKey Key {
             get {
                 if (!_KeyCached)
-                    _KeyCached = GetKeyOfEntry(IndexEntryPointer, IndexEntryPointer->KeyType, out _Key);
+                    _KeyCached = GetKeyOfEntry(ValuePointer, ValuePointer->KeyType, out _Key);
                 
                 if (!_KeyCached)
                     throw new InvalidDataException();
@@ -179,7 +179,7 @@ namespace Squared.Data.Mangler {
         }
 
         public void DeserializeValue<U> (Deserializer<U> deserializer, uint offset, uint length, out U output) {
-            var subContext = new DeserializationContext(GetKeyOfEntry, IndexEntryPointer, Source + offset, length);
+            var subContext = new DeserializationContext(GetKeyOfEntry, ValuePointer, Source + offset, length);
             try {
                 deserializer(ref subContext, out output);
             } finally {

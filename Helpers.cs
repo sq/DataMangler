@@ -61,8 +61,10 @@ namespace Squared.Data.Mangler {
     /// Using a batch to modify a Tangle is faster than calling the Tangle's methods individually.
     /// </summary>
     /// <typeparam name="T">The type of the tangle's items.</typeparam>
-    public class Batch<T> {
+    public class Batch<T> : IBatch {
         public readonly int Capacity;
+        public readonly Tangle<T> Tangle;
+
         internal readonly BatchItem<T>[] Buffer;
         private int _Count;
 
@@ -70,7 +72,8 @@ namespace Squared.Data.Mangler {
         /// Creates a batch.
         /// </summary>
         /// <param name="capacity">The maximum number of modifications that the batch can contain.</param>
-        public Batch (int capacity) {
+        public Batch (Tangle<T> tangle, int capacity) {
+            Tangle = tangle;
             Capacity = capacity;
             Buffer = new BatchItem<T>[capacity];
         }
@@ -133,8 +136,8 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <param name="tangle">The tangle to modify.</param>
         /// <returns>A future that becomes completed once all the work items in the batch have completed.</returns>
-        public Future<int> Execute (Tangle<T> tangle) {
-            return tangle.QueueWorkItem(new Tangle<T>.BatchThunk(this));
+        public Future<int> Execute () {
+            return Tangle.QueueWorkItem(new Tangle<T>.BatchThunk(this));
         }
     }
 

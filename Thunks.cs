@@ -94,7 +94,7 @@ namespace Squared.Data.Mangler {
                 ShouldReplace = shouldReplace;
             }
 
-            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue) {
+            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ref T newValue) {
                 return ShouldReplace;
             }
 
@@ -113,14 +113,14 @@ namespace Squared.Data.Mangler {
                 Batch = batch;
             }
 
-            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue) {
+            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ref T newValue) {
                 T oldValue;
                 if (Callback != null) {
-                    tangle.ReadData(ref indexEntry, out oldValue);
+                    tangle.ReadData(ref btreeValue, out oldValue);
                     newValue = Callback(oldValue);
                     return true;
                 } else if (DecisionCallback != null) {
-                    tangle.ReadData(ref indexEntry, out oldValue);
+                    tangle.ReadData(ref btreeValue, out oldValue);
                     return DecisionCallback(ref oldValue, ref newValue);
                 } else {
                     return ShouldReplace;
@@ -165,9 +165,9 @@ namespace Squared.Data.Mangler {
                 DecisionCallback = callback;
             }
 
-            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue) {
+            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ref T newValue) {
                 T oldValue;
-                tangle.ReadData(ref indexEntry, out oldValue);
+                tangle.ReadData(ref btreeValue, out oldValue);
 
                 if (Callback != null) {
                     newValue = Callback(oldValue);
@@ -197,7 +197,7 @@ namespace Squared.Data.Mangler {
 
         private class GetMultipleThunk<TKey> : ThunkBase<KeyValuePair<TKey, T>[]> {
             public readonly IEnumerable<TKey> Keys;
-            public readonly Func<TKey, TangleKey> KeyConverter;
+            public readonly TangleKeyConverter<TKey> KeyConverter;
 
             public GetMultipleThunk (IEnumerable<TKey> keys) {
                 Keys = keys;
@@ -259,8 +259,8 @@ namespace Squared.Data.Mangler {
             public readonly IEnumerable<TLeftKey> Keys;
             public readonly JoinKeySelector<TLeftKey, T, TRightKey> KeySelector;
             public readonly JoinValueSelector<TLeftKey, T, TRightKey, TRight, TOut> ValueSelector;
-            public readonly Func<TLeftKey, TangleKey> LeftKeyConverter;
-            public readonly Func<TRightKey, TangleKey> RightKeyConverter;
+            public readonly TangleKeyConverter<TLeftKey> LeftKeyConverter;
+            public readonly TangleKeyConverter<TRightKey> RightKeyConverter;
 
             public JoinThunk (
                 Tangle<TRight>.JoinBarrierThunk rightBarrier,
@@ -330,7 +330,7 @@ namespace Squared.Data.Mangler {
 
         private class GetAllValuesThunk : ThunkBase<T[]> {
             protected override void OnExecute (Tangle<T> tangle, out T[] result) {
-                var nodeCount = tangle.BTreeNodeCount;
+                var nodeCount = tangle.BTree.NodeCount;
                 var count = tangle.Count;
                 int position = 0;
 
@@ -346,7 +346,7 @@ namespace Squared.Data.Mangler {
 
         private class GetAllKeysThunk : ThunkBase<TangleKey[]> {
             protected override void OnExecute (Tangle<T> tangle, out TangleKey[] result) {
-                var nodeCount = tangle.BTreeNodeCount;
+                var nodeCount = tangle.BTree.NodeCount;
                 var count = tangle.Count;
                 int position = 0;
 

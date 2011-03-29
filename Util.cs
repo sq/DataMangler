@@ -132,6 +132,26 @@ namespace Squared.Data.Mangler.Internal {
     public unsafe delegate void GenericStructureToPtrFunc<T> (ref T source, byte* destination, uint size)
         where T : struct;
 
+    public unsafe static class Unsafe {
+        public static void ReadBytes (byte* ptr, long offset, byte[] buffer, long bufferOffset, uint count) {
+            fixed (byte* pDest = &buffer[bufferOffset])
+                Native.memmove(pDest, ptr + offset, new UIntPtr((uint)count));
+        }
+
+        public static void WriteBytes (byte* ptr, long offset, ArraySegment<byte> bytes) {
+            WriteBytes(ptr, offset, bytes.Array, bytes.Offset, bytes.Count);
+        }
+
+        public static void WriteBytes (byte* ptr, long offset, byte[] source, int sourceOffset, int count) {
+            fixed (byte* pSource = &source[sourceOffset])
+                Native.memmove(ptr + offset, pSource, new UIntPtr((uint)count));
+        }
+
+        public static void ZeroBytes (byte* ptr, long offset, uint count) {
+            Native.memset(ptr + offset, 0, new UIntPtr((uint)count));
+        }
+    }
+
     public unsafe static class Unsafe<T>
         where T : struct {
 

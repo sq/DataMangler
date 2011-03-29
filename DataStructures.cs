@@ -49,9 +49,9 @@ namespace Squared.Data.Mangler.Internal {
                 throw new InvalidDataException();
 
             Size = (uint)Marshal.SizeOf(typeof(BTreeNode));
-            TotalSize = Size + (MaxValues * IndexEntry.Size) + (MaxLeaves * BTreeLeaf.Size);
+            TotalSize = Size + (MaxValues * BTreeValue.Size) + (MaxLeaves * BTreeLeaf.Size);
             OffsetOfValues = Size;
-            OffsetOfLeaves = OffsetOfValues + (MaxValues * IndexEntry.Size);
+            OffsetOfLeaves = OffsetOfValues + (MaxValues * BTreeValue.Size);
         }
 
         public byte IsValid;
@@ -75,12 +75,12 @@ namespace Squared.Data.Mangler.Internal {
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    internal unsafe struct IndexEntry {
+    internal unsafe struct BTreeValue {
         public const int KeyPrefixSize = 4;
         public static readonly uint Size;
 
-        static IndexEntry () {
-            Size = (uint)Marshal.SizeOf(typeof(IndexEntry));
+        static BTreeValue () {
+            Size = (uint)Marshal.SizeOf(typeof(BTreeValue));
         }
 
         public uint DataOffset;

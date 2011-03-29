@@ -73,6 +73,10 @@ namespace Squared.Data.Mangler {
         }
     }
 
+    public interface IBatch {
+        Future<int> Execute ();
+    }
+
     /// <summary>
     /// Called to update a value within a tangle.
     /// </summary>
@@ -115,6 +119,10 @@ namespace Squared.Data.Mangler {
     /// <returns>The join result.</returns>
     public delegate TOut JoinValueSelector<TLeftKey, TLeft, TRightKey, TRight, out TOut> 
         (TLeftKey leftKey, ref TLeft leftValue, TRightKey rightKey, ref TRight rightValue);
+
+    public delegate TKey IndexFunc<TKey, TValue> (TValue value);
+
+    public delegate TangleKey TangleKeyConverter<TValue> (TValue value);
 }
 
 namespace Squared.Data.Mangler.Internal {
@@ -129,6 +137,6 @@ namespace Squared.Data.Mangler.Internal {
     }
 
     internal interface IReplaceCallback<T> {
-        bool ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue);
+        bool ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ref T newValue);
     }
 }

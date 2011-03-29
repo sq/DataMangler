@@ -39,8 +39,10 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="BTree.cs" />
     <Compile Include="DataStructures.cs" />
     <Compile Include="Helpers.cs" />
+    <Compile Include="Index.cs" />
     <Compile Include="Interfaces.cs" />
     <Compile Include="Serialization.cs" />
     <Compile Include="StreamCollection.cs" />

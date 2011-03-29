@@ -252,30 +252,30 @@ namespace Squared.Data.Mangler.Tests {
             if (direction > 0)
                 for (int i = 0; i < numIterations; i++) {
                     if (batch == null)
-                        batch = new Batch<int>(batchSize);
+                        batch = Tangle.CreateBatch(batchSize);
 
                     batch.Add(i, i);
 
                     if (batch.Count == batchSize) {
-                        yield return batch.Execute(Tangle);
+                        yield return batch.Execute();
                         batch = null;
                     }
                 }
             else
                 for (int i = numIterations - 1; i >= 0; i--) {
                     if (batch == null)
-                        batch = new Batch<int>(batchSize);
+                        batch = Tangle.CreateBatch(batchSize);
 
                     batch.Add(i, i);
 
                     if (batch.Count == batchSize) {
-                        yield return batch.Execute(Tangle);
+                        yield return batch.Execute();
                         batch = null;
                     }
                 }
 
             if (batch != null)
-                yield return batch.Execute(Tangle);
+                yield return batch.Execute();
         }
 
         [Test]
@@ -554,7 +554,6 @@ namespace Squared.Data.Mangler.Tests {
 
         [TearDown]
         public override void TearDown () {
-            // Tangle.ExportStreams(@"C:\dm_streams\");
             Tangle.Dispose();
             base.TearDown();
         }

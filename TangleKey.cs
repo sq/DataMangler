@@ -30,7 +30,7 @@ namespace Squared.Data.Mangler {
         private static readonly Dictionary<Type, ushort> TypeToTypeId = new Dictionary<Type, ushort>();
 
         static TangleKey () {
-            Converters[typeof(TangleKey)] = (Func<TangleKey, TangleKey>)((key) => key);
+            Converters[typeof(TangleKey)] = (TangleKeyConverter<TangleKey>)((key) => key);
 
             RegisterType<string>();
             RegisterType<byte[]>();
@@ -53,24 +53,24 @@ namespace Squared.Data.Mangler {
                 var constructor = typeof(TangleKey).GetConstructor(new Type[] { type });
                 var parameter = Expression.Parameter(type, "value");
                 var expression = Expression.New(constructor, new[] { parameter });
-                var converterType = typeof(Func<T, TangleKey>);
+                var converterType = typeof(TangleKeyConverter<T>);
                 var converterExpression = Expression.Lambda(converterType, expression, parameter);
                 var converter = converterExpression.Compile();
                 Converters[type] = converter;
             }
         }
 
-        public static void RegisterKeyType<T> (Func<T, TangleKey> converter) {
+        public static void RegisterKeyType<T> (TangleKeyConverter<T> converter) {
             RegisterType<T>(autoConverter: false);
             Converters[typeof(T)] = converter;
         }
 
-        public static Func<T, TangleKey> GetConverter<T> () {
+        public static TangleKeyConverter<T> GetConverter<T> () {
             Delegate converter;
             if (!Converters.TryGetValue(typeof(T), out converter))
                 throw new InvalidOperationException(String.Format("Type '{0}' is not convertible to TangleKey", typeof(T).Name));
 
-            return (Func<T, TangleKey>)converter;
+            return (TangleKeyConverter<T>)converter;
         }
 
         public readonly ushort OriginalTypeId;
