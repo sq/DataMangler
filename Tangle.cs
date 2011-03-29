@@ -336,7 +336,7 @@ namespace Squared.Data.Mangler {
         }
 
         private void InternalSetFoundValue (long nodeIndex, uint valueIndex, ref T value) {
-            using (var range = BTree.AccessNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
+            using (var range = BTree.AccessNode(nodeIndex, true)) {
                 ushort keyType;
                 var pEntry = BTree.LockValue(range, valueIndex, out keyType);
 
@@ -345,21 +345,21 @@ namespace Squared.Data.Mangler {
                 BTree.WriteData(pEntry, segment);
 
                 BTree.UnlockValue(pEntry, keyType);
+
+                BTree.UnlockNode(range);
             }
         }
 
         private bool InternalSet (TangleKey key, ref T value, IReplaceCallback<T> replacementCallback) {
-            long? dataOffset = null;
-
-            long nodeIndex, parentNodeIndex;
-            uint valueIndex, parentValueIndex;
+            long nodeIndex;
+            uint valueIndex;
 
             Exception serializerException = null;
-            bool foundExisting = BTree.FindKey(key, true, out nodeIndex, out valueIndex, out parentNodeIndex, out parentValueIndex);
-            StreamRange range;
+            bool foundExisting = BTree.FindKey(key, true, out nodeIndex, out valueIndex);
 
+            StreamRange range;
             if (foundExisting) {
-                range = BTree.AccessNode(nodeIndex, MemoryMappedFileAccess.ReadWrite);
+                range = BTree.AccessNode(nodeIndex, true);
             } else {
                 // Prepare BTree for insert. Note that once we have done this, we must successfully insert or
                 //  the index will be left in an invalid state!
@@ -374,6 +374,7 @@ namespace Squared.Data.Mangler {
 
                     if (!shouldContinue) {
                         BTree.UnlockValue(pEntry, key.OriginalTypeId);
+                        BTree.UnlockNode(range);
                         return false;
                     }
                 } else {
@@ -397,18 +398,10 @@ namespace Squared.Data.Mangler {
 
                 BTree.UnlockValue(pEntry, key.OriginalTypeId);
 
-                if (!foundExisting) {
-                    // Finalize BTree after insert
-
-                    var pNode = (BTreeNode*)range.Pointer;
-                    if (pNode->IsValid != 0)
-                        throw new InvalidDataException();
-                    if (pNode->HasLeaves != 0)
-                        throw new InvalidDataException();
-
-                    pNode->IsValid = 1;
-
-                    BTree.AdjustValueCount(1);
+                if (foundExisting) {
+                    BTree.UnlockNode(range);
+                } else {
+                    BTree.FinalizeInsert(range);
                 }
             }
 
@@ -424,7 +417,7 @@ namespace Squared.Data.Mangler {
             long nodeIndex;
             uint valueIndex;
 
-            if (!BTree.FindKey(key, out nodeIndex, out valueIndex)) {
+            if (!BTree.FindKey(key, false, out nodeIndex, out valueIndex)) {
                 result = default(FindResult);
                 return false;
             }
@@ -437,12 +430,12 @@ namespace Squared.Data.Mangler {
             long nodeIndex;
             uint valueIndex;
 
-            if (!BTree.FindKey(key, out nodeIndex, out valueIndex)) {
+            if (!BTree.FindKey(key, false, out nodeIndex, out valueIndex)) {
                 value = default(T);
                 return false;
             }
 
-            using (var range = BTree.AccessValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
+            using (var range = BTree.AccessValue(nodeIndex, valueIndex)) {
                 var pEntry = (BTreeValue *)range.Pointer;
                 BTree.ReadData(ref *pEntry, pEntry->KeyType, Deserializer, out value);
             }
@@ -451,11 +444,8 @@ namespace Squared.Data.Mangler {
         }
 
         private int InternalGetNodeValues (long nodeIndex, T[] output, int outputOffset) {
-            using (var range = BTree.AccessNode(nodeIndex, MemoryMappedFileAccess.Read)) {
+            using (var range = BTree.AccessNode(nodeIndex, false)) {
                 var pNode = (BTreeNode *)range.Pointer;
-
-                if (pNode->IsValid != 1)
-                    throw new InvalidDataException();
 
                 var numValues = pNode->NumValues;
                 for (int i = 0; i < numValues; i++) {
@@ -469,11 +459,8 @@ namespace Squared.Data.Mangler {
         }
 
         private int InternalGetNodeKeys (long nodeIndex, TangleKey[] output, int outputOffset) {
-            using (var range = BTree.AccessNode(nodeIndex, MemoryMappedFileAccess.Read)) {
+            using (var range = BTree.AccessNode(nodeIndex, false)) {
                 var pNode = (BTreeNode*)range.Pointer;
-
-                if (pNode->IsValid != 1)
-                    throw new InvalidDataException();
 
                 var numValues = pNode->NumValues;
                 for (int i = 0; i < numValues; i++) {
@@ -487,7 +474,7 @@ namespace Squared.Data.Mangler {
         }
 
         private void InternalGetFoundValue (long nodeIndex, uint valueIndex, out T result) {
-            using (var range = BTree.AccessValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
+            using (var range = BTree.AccessValue(nodeIndex, valueIndex)) {
                 var pEntry = (BTreeValue *)range.Pointer;
 
                 BTree.ReadData(ref *pEntry, pEntry->KeyType, Deserializer, out result);

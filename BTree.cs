@@ -66,17 +66,37 @@ namespace Squared.Data.Mangler.Internal {
             }
         }
 
-        public StreamRange AccessNode (long index, MemoryMappedFileAccess access) {
+        public StreamRange AccessNode (long index, bool forWrite) {
             unchecked {
                 long position = BTreeHeader.Size + (index * BTreeNode.TotalSize);
-                return IndexStream.AccessRange(position, BTreeNode.TotalSize, access);
+                var range = IndexStream.AccessRange(position, BTreeNode.TotalSize, MemoryMappedFileAccess.ReadWrite);
+
+                var pNode = (BTreeNode*)range.Pointer;
+                if (pNode->IsValid != 1) {
+                    // If the node is fully uninitialized, locking it for write is okay
+                    if ((pNode->NumValues != 0) || (pNode->HasLeaves != 0))
+                        throw new InvalidDataException();
+                }
+
+                if (forWrite)
+                    pNode->IsValid = 0;
+
+                return range;
             }
         }
 
-        public StreamRange AccessValue (long nodeIndex, uint valueIndex, MemoryMappedFileAccess access) {
+        public void UnlockNode (StreamRange range) {
+            var pNode = (BTreeNode*)range.Pointer;
+            if (pNode->IsValid != 0)
+                throw new InvalidDataException();
+
+            pNode->IsValid = 1;
+        }
+
+        public StreamRange AccessValue (long nodeIndex, uint valueIndex) {
             unchecked {
                 long position = BTreeHeader.Size + ((nodeIndex * BTreeNode.TotalSize) + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));
-                return IndexStream.AccessRange(position, BTreeValue.Size, access);
+                return IndexStream.AccessRange(position, BTreeValue.Size, MemoryMappedFileAccess.ReadWrite);
             }
         }
 
@@ -184,39 +204,21 @@ namespace Squared.Data.Mangler.Internal {
         /// </summary>
         /// <param name="key">The key to search for.</param>
         /// <param name="nodeIndex">Contains the index of the BTree node where the search ended.</param>
-        /// <param name="valueIndex">Contains the index of the value within the node that matched the key, if a match was found.</param>
-        /// <returns>True if the key was found within the tree. False if the key was not found.</returns>
-        public bool FindKey (TangleKey key, out long nodeIndex, out uint valueIndex) {
-            long temp;
-            uint temp2;
-
-            return FindKey(key, false, out nodeIndex, out valueIndex, out temp, out temp2);
-        }
-
-        /// <summary>
-        /// Searches the BTree for a provided key.
-        /// </summary>
-        /// <param name="key">The key to search for.</param>
-        /// <param name="nodeIndex">Contains the index of the BTree node where the search ended.</param>
         /// <param name="valueIndex">Contains the index of the value within the node that matched the key, if a match was found. If a match was not found, contains the index of the leaf where the key should be inserted.</param>
-        /// <param name="parentNodeIndex">Contains the index of the BTree node containing the node where the search ended.</param>
-        /// <param name="parentValueIndex">Contains the index of the leaf within the parent BTree node that led to the BTree node where the search ended.</param>
         /// <returns>True if the key was found within the tree. False if the key was not found.</returns>
-        public bool FindKey (TangleKey key, bool forInsertion, out long nodeIndex, out uint valueIndex, out long parentNodeIndex, out uint parentValueIndex) {
+        public bool FindKey (TangleKey key, bool forInsertion, out long nodeIndex, out uint valueIndex) {
             uint keyLength = (uint)key.Data.Count;
 
             long nodeCount = NodeCount;
             long rootIndex = RootIndex;
-            parentNodeIndex = rootIndex;
-            parentValueIndex = 0;
+            long parentNodeIndex = rootIndex;
             long currentNode = parentNodeIndex;
+            uint parentValueIndex = 0;
 
             fixed (byte* pKey = &key.Data.Array[key.Data.Offset])
                 while (currentNode >= 0 && currentNode < nodeCount)
-                    using (var range = AccessNode(currentNode, MemoryMappedFileAccess.Read)) {
+                    using (var range = AccessNode(currentNode, false)) {
                         var pNode = (BTreeNode*)range.Pointer;
-                        if (pNode->IsValid == 0)
-                            throw new InvalidDataException();
 
                         // As we descend the tree, we split any full nodes we encounter so that
                         //  if we end up performing an insertion, we won't need to then walk all the
@@ -226,7 +228,7 @@ namespace Squared.Data.Mangler.Internal {
                                 // Splitting the root.
                                 var newRootIndex = CreateRoot();
 
-                                using (var newRootRange = AccessNode(newRootIndex, MemoryMappedFileAccess.ReadWrite)) {
+                                using (var newRootRange = AccessNode(newRootIndex, true)) {
                                     var pNewRoot = (BTreeNode*)newRootRange.Pointer;
                                     var pNewLeaves = (BTreeLeaf*)(newRootRange.Pointer + BTreeNode.OffsetOfLeaves);
 
@@ -235,6 +237,8 @@ namespace Squared.Data.Mangler.Internal {
                                     //  root in half. Splitting will move a single value up into the new root.
                                     pNewRoot->HasLeaves = 1;
                                     pNewLeaves[0].NodeIndex = (uint)currentNode;
+
+                                    UnlockNode(newRootRange);
                                 }
 
                                 SplitLeafNode(newRootIndex, 0, currentNode);
@@ -289,18 +293,14 @@ namespace Squared.Data.Mangler.Internal {
         /// <param name="valueIndex">The index of the value within the node that will be moved forward to make room for the new value.</param>
         /// <returns>A StreamRange that can be used to access the specified BTree node.</returns>
         public StreamRange PrepareForInsert (long nodeIndex, uint valueIndex) {
-            var range = AccessNode(nodeIndex, MemoryMappedFileAccess.ReadWrite);
+            var range = AccessNode(nodeIndex, true);
 
             var pNode = (BTreeNode*)range.Pointer;
             var pValues = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues);
             var pLeaves = (BTreeLeaf*)(range.Pointer + BTreeNode.OffsetOfLeaves);
 
-            if (pNode->IsValid == 0)
-                throw new InvalidDataException();
             if (pNode->NumValues >= BTreeNode.MaxValues)
                 throw new InvalidDataException();
-
-            pNode->IsValid = 0;
 
             if (valueIndex < pNode->NumValues) {
                 var destPtr = (byte*)(&pValues[valueIndex + 1]);
@@ -335,6 +335,13 @@ namespace Squared.Data.Mangler.Internal {
             return range;
         }
 
+        public void FinalizeInsert (StreamRange range) {
+            UnlockNode(range);
+
+            var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
+            Interlocked.Increment(ref pHeader->ItemCount);
+        }
+
         /// <summary>
         /// Inserts a new value and leaf into the specified BTree node at the specified position. Existing value(s) and leaves are moved.
         /// </summary>
@@ -342,19 +349,16 @@ namespace Squared.Data.Mangler.Internal {
         /// <param name="valueIndex">The index of the value to move forward.</param>
         /// <param name="value">The BTreeValue containing information on the value. It must be fully filled in.</param>
         /// <param name="leaf">The leaf associated with the new value.</param>
-        public void Insert (long nodeIndex, uint valueIndex, ref BTreeValue value, ref BTreeLeaf leaf) {
+        private void Insert (long nodeIndex, uint valueIndex, ref BTreeValue value, ref BTreeLeaf leaf) {
             using (var range = PrepareForInsert(nodeIndex, valueIndex)) {
                 var pNode = (BTreeNode*)range.Pointer;
                 var pValues = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues);
                 var pLeaves = (BTreeLeaf*)(range.Pointer + BTreeNode.OffsetOfLeaves);
 
-                if (pNode->IsValid != 0)
-                    throw new InvalidDataException();
-
                 pValues[valueIndex] = value;
                 pLeaves[valueIndex + 1] = leaf;
 
-                pNode->IsValid = 1;
+                UnlockNode(range);
             }
         }
 
@@ -369,8 +373,8 @@ namespace Squared.Data.Mangler.Internal {
 
             long newIndex = CreateNode();
 
-            using (var leafRange = AccessNode(leafNodeIndex, MemoryMappedFileAccess.ReadWrite))
-            using (var newRange = AccessNode(newIndex, MemoryMappedFileAccess.ReadWrite)) {
+            using (var leafRange = AccessNode(leafNodeIndex, true))
+            using (var newRange = AccessNode(newIndex, true)) {
                 var pLeaf = (BTreeNode*)leafRange.Pointer;
                 var pLeafValues = (BTreeValue*)(leafRange.Pointer + BTreeNode.OffsetOfValues);
                 var pLeafLeaves = (BTreeLeaf*)(leafRange.Pointer + BTreeNode.OffsetOfLeaves);
@@ -379,12 +383,8 @@ namespace Squared.Data.Mangler.Internal {
                 var pNewValues = (BTreeValue*)(newRange.Pointer + BTreeNode.OffsetOfValues);
                 var pNewLeaves = (BTreeLeaf*)(newRange.Pointer + BTreeNode.OffsetOfLeaves);
 
-                if (pLeaf->IsValid != 1)
-                    throw new InvalidDataException();
                 if (pLeaf->NumValues != BTreeNode.MaxValues)
                     throw new InvalidDataException();
-
-                pLeaf->IsValid = 0;
 
                 *pNew = new BTreeNode {
                     NumValues = (ushort)tMinus1,
@@ -399,14 +399,14 @@ namespace Squared.Data.Mangler.Internal {
                 if (pLeaf->HasLeaves == 1)
                     Native.memmove((byte*)pNewLeaves, (byte*)&pLeafLeaves[BTreeNode.T], new UIntPtr(BTreeNode.T * BTreeLeaf.Size));
 
-                pNew->IsValid = 1;
-                pLeaf->IsValid = 1;
-
                 var newLeaf = new BTreeLeaf(newIndex);
                 Insert(
                     parentNodeIndex, leafValueIndex,
                     ref pLeafValues[tMinus1], ref newLeaf
                 );
+
+                UnlockNode(newRange);
+                UnlockNode(leafRange);
             }
         }
 
@@ -424,7 +424,7 @@ namespace Squared.Data.Mangler.Internal {
         private long CreateRoot (long oldRootIndex) {
             var newIndex = CreateNode();
 
-            using (var range = AccessNode(newIndex, MemoryMappedFileAccess.Write)) {
+            using (var range = AccessNode(newIndex, true)) {
                 var pNode = (BTreeNode*)range.Pointer;
                 *pNode = new BTreeNode {
                     HasLeaves = 0,
@@ -497,16 +497,24 @@ namespace Squared.Data.Mangler.Internal {
             WriteKey(ref *pEntry, key);
         }
 
+        public void ReadData<T> (ref BTreeValue entry, Deserializer<T> deserializer, out T value) {
+            var keyType = entry.KeyType;
+            if (keyType == 0)
+                throw new InvalidDataException();
+
+            ReadData(ref entry, keyType, deserializer, out value);
+        }
+
         public void ReadData<T> (ref BTreeValue entry, ushort keyType, Deserializer<T> deserializer, out T value) {
             fixed (BTreeValue* pEntry = &entry)
-                using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength)) {
-                    var context = new DeserializationContext(_GetKeyOfEntry, pEntry, keyType, range.Pointer, entry.DataLength);
-                    try {
-                        deserializer(ref context, out value);
-                    } finally {
-                        context.Dispose();
-                    }
+            using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength)) {
+                var context = new DeserializationContext(_GetKeyOfEntry, pEntry, keyType, range.Pointer, entry.DataLength);
+                try {
+                    deserializer(ref context, out value);
+                } finally {
+                    context.Dispose();
                 }
+            }
         }
 
         /// <summary>
@@ -614,11 +622,6 @@ namespace Squared.Data.Mangler.Internal {
                 var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
                 return pHeader->ItemCount;
             }
-        }
-
-        public long AdjustValueCount (long delta) {
-            var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
-            return Interlocked.Add(ref pHeader->ItemCount, delta);
         }
 
         public long WastedDataBytes {
