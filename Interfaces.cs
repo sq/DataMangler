@@ -83,9 +83,10 @@ namespace Squared.Data.Mangler {
     /// <summary>
     /// Called to update a value within a tangle.
     /// </summary>
-    /// <param name="value">The current value of the item. Change it and return true if you wish to modify the item.</param>
+    /// <param name="oldValue">The current value of the item.</param>
+    /// <param name="newValue">The new value of the item. By default, this is the value provided when calling AddOrUpdate.</param>
     /// <returns>True to update the item's value, false to abort.</returns>
-    public delegate bool DecisionUpdateCallback<T> (ref T value);
+    public delegate bool DecisionUpdateCallback<T> (ref T oldValue, ref T newValue);
 
     /// <summary>
     /// Called to generate the right side key for a join.

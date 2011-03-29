@@ -114,14 +114,14 @@ namespace Squared.Data.Mangler {
             }
 
             bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue) {
+                T oldValue;
                 if (Callback != null) {
-                    T oldValue;
                     tangle.ReadData(ref indexEntry, out oldValue);
                     newValue = Callback(oldValue);
                     return true;
                 } else if (DecisionCallback != null) {
-                    tangle.ReadData(ref indexEntry, out newValue);
-                    return DecisionCallback(ref newValue);
+                    tangle.ReadData(ref indexEntry, out oldValue);
+                    return DecisionCallback(ref oldValue, ref newValue);
                 } else {
                     return ShouldReplace;
                 }
@@ -166,14 +166,14 @@ namespace Squared.Data.Mangler {
             }
 
             bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref IndexEntry indexEntry, ref T newValue) {
+                T oldValue;
+                tangle.ReadData(ref indexEntry, out oldValue);
+
                 if (Callback != null) {
-                    T oldValue;
-                    tangle.ReadData(ref indexEntry, out oldValue);
                     newValue = Callback(oldValue);
                     return true;
                 } else {
-                    tangle.ReadData(ref indexEntry, out newValue);
-                    return DecisionCallback(ref newValue);
+                    return DecisionCallback(ref oldValue, ref newValue);
                 }
             }
 

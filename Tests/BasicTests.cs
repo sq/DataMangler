@@ -150,7 +150,7 @@ namespace Squared.Data.Mangler.Tests {
         [Test]
         public void AddOrUpdateCallbackCanAbortUpdate () {
             Scheduler.WaitFor(Tangle.Add("a", 1));
-            Scheduler.WaitFor(Tangle.AddOrUpdate("a", 999, (ref int value) => false));
+            Scheduler.WaitFor(Tangle.AddOrUpdate("a", 999, (ref int oldValue, ref int newValue) => false));
 
             Assert.AreEqual(1, Scheduler.WaitFor(Tangle.Get("a")));
         }
@@ -158,8 +158,8 @@ namespace Squared.Data.Mangler.Tests {
         [Test]
         public void AddOrUpdateCallbackCanMutateValue () {
             Scheduler.WaitFor(Tangle.Add("a", 1));
-            Scheduler.WaitFor(Tangle.AddOrUpdate("a", 999, (ref int value) => {
-                value += 1;
+            Scheduler.WaitFor(Tangle.AddOrUpdate("a", 999, (ref int oldValue, ref int newValue) => {
+                newValue = oldValue + 1;
                 return true;
             }));
 
