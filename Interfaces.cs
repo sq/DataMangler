@@ -137,6 +137,6 @@ namespace Squared.Data.Mangler.Internal {
     }
 
     internal interface IReplaceCallback<T> {
-        bool ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ref T newValue);
+        bool ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ushort keyType, ref T newValue);
     }
 }

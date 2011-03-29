@@ -94,7 +94,7 @@ namespace Squared.Data.Mangler {
                 ShouldReplace = shouldReplace;
             }
 
-            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ref T newValue) {
+            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ushort keyType, ref T newValue) {
                 return ShouldReplace;
             }
 
@@ -113,14 +113,14 @@ namespace Squared.Data.Mangler {
                 Batch = batch;
             }
 
-            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ref T newValue) {
+            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ushort keyType, ref T newValue) {
                 T oldValue;
                 if (Callback != null) {
-                    tangle.ReadData(ref btreeValue, out oldValue);
+                    tangle.ReadData(ref btreeValue, keyType, out oldValue);
                     newValue = Callback(oldValue);
                     return true;
                 } else if (DecisionCallback != null) {
-                    tangle.ReadData(ref btreeValue, out oldValue);
+                    tangle.ReadData(ref btreeValue, keyType, out oldValue);
                     return DecisionCallback(ref oldValue, ref newValue);
                 } else {
                     return ShouldReplace;
@@ -165,9 +165,9 @@ namespace Squared.Data.Mangler {
                 DecisionCallback = callback;
             }
 
-            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ref T newValue) {
+            bool IReplaceCallback<T>.ShouldReplace (Tangle<T> tangle, ref BTreeValue btreeValue, ushort keyType, ref T newValue) {
                 T oldValue;
-                tangle.ReadData(ref btreeValue, out oldValue);
+                tangle.ReadData(ref btreeValue, keyType, out oldValue);
 
                 if (Callback != null) {
                     newValue = Callback(oldValue);

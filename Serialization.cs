@@ -129,16 +129,18 @@ namespace Squared.Data.Mangler {
         private UnmanagedMemoryStream _Stream;
         private readonly BTreeValue * ValuePointer;
         private readonly GetKeyOfEntryFunc GetKeyOfEntry;
+        private readonly ushort KeyType;
         private TangleKey _Key;
         private bool _KeyCached;
 
         public readonly byte* Source;
         public readonly uint SourceLength;
 
-        internal DeserializationContext (GetKeyOfEntryFunc getKeyOfEntry, BTreeValue * pEntry, byte * source, uint sourceLength) {
+        internal DeserializationContext (GetKeyOfEntryFunc getKeyOfEntry, BTreeValue * pEntry, ushort keyType, byte * source, uint sourceLength) {
             GetKeyOfEntry = getKeyOfEntry;
             _Key = default(TangleKey);
             _KeyCached = false;
+            KeyType = keyType;
             ValuePointer = pEntry;
             Source = source;
             SourceLength = sourceLength;
@@ -148,7 +150,7 @@ namespace Squared.Data.Mangler {
         public TangleKey Key {
             get {
                 if (!_KeyCached)
-                    _KeyCached = GetKeyOfEntry(ValuePointer, ValuePointer->KeyType, out _Key);
+                    _KeyCached = GetKeyOfEntry(ValuePointer, KeyType, out _Key);
                 
                 if (!_KeyCached)
                     throw new InvalidDataException();
@@ -179,7 +181,7 @@ namespace Squared.Data.Mangler {
         }
 
         public void DeserializeValue<U> (Deserializer<U> deserializer, uint offset, uint length, out U output) {
-            var subContext = new DeserializationContext(GetKeyOfEntry, ValuePointer, Source + offset, length);
+            var subContext = new DeserializationContext(GetKeyOfEntry, ValuePointer, KeyType, Source + offset, length);
             try {
                 deserializer(ref subContext, out output);
             } finally {

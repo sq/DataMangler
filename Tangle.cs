@@ -336,27 +336,15 @@ namespace Squared.Data.Mangler {
         }
 
         private void InternalSetFoundValue (long nodeIndex, uint valueIndex, ref T value) {
-            using (var range = BTree.AccessValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Write)) {
-                var pEntry = (BTreeValue *)range.Pointer;
-
-                var keyType = pEntry->KeyType;
-
-                if (keyType == 0)
-                    throw new InvalidDataException();
+            using (var range = BTree.AccessNode(nodeIndex, MemoryMappedFileAccess.ReadWrite)) {
+                ushort keyType;
+                var pEntry = BTree.LockValue(range, valueIndex, out keyType);
 
                 var segment = BTree.Serialize(pEntry, Serializer, keyType, ref value);
-                uint count = (uint)segment.Count;
 
-                long? dataOffset = pEntry->DataOffset;
-                BTree.WriteModes writeMode = (segment.Count > pEntry->DataLength + pEntry->ExtraDataBytes) ?
-                    BTree.WriteModes.AppendData : BTree.WriteModes.ReplaceData;
+                BTree.WriteData(pEntry, segment);
 
-                if (writeMode == BTree.WriteModes.AppendData)
-                    dataOffset = BTree.DataStream.AllocateSpace(count);
-
-                pEntry->KeyType = 0;
-                BTree.WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
-                pEntry->KeyType = keyType;
+                BTree.UnlockValue(pEntry, keyType);
             }
         }
 
@@ -370,39 +358,26 @@ namespace Squared.Data.Mangler {
             bool foundExisting = BTree.FindKey(key, true, out nodeIndex, out valueIndex, out parentNodeIndex, out parentValueIndex);
             StreamRange range;
 
-            if (!foundExisting) {
+            if (foundExisting) {
+                range = BTree.AccessNode(nodeIndex, MemoryMappedFileAccess.ReadWrite);
+            } else {
                 // Prepare BTree for insert. Note that once we have done this, we must successfully insert or
                 //  the index will be left in an invalid state!
                 range = BTree.PrepareForInsert(nodeIndex, valueIndex);
-            } else {
-                range = BTree.AccessNode(nodeIndex, MemoryMappedFileAccess.ReadWrite);
             }
 
             using (range) {
-                var pEntry = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));
+                var pEntry = BTree.LockValue(range, valueIndex, foundExisting ? key.OriginalTypeId : (ushort)0);
 
                 if (foundExisting) {
-                    if (pEntry->KeyType != key.OriginalTypeId)
-                        throw new InvalidDataException();
+                    bool shouldContinue = replacementCallback.ShouldReplace(this, ref *pEntry, key.OriginalTypeId, ref value);
 
-                    bool shouldContinue = replacementCallback.ShouldReplace(this, ref *pEntry, ref value);
-                    if (!shouldContinue)
+                    if (!shouldContinue) {
+                        BTree.UnlockValue(pEntry, key.OriginalTypeId);
                         return false;
-
-                    pEntry->KeyType = 0;
+                    }
                 } else {
-                    pEntry->KeyType = 0;
-                    if (key.Data.Count > BTreeValue.KeyPrefixSize)
-                        pEntry->KeyOffset = (uint)BTree.KeyStream.AllocateSpace((uint)key.Data.Count).Value;
-                    else
-                        pEntry->KeyOffset = 0;
-
-                    pEntry->KeyLength = (ushort)key.Data.Count;
-                    pEntry->DataOffset = 0;
-                    pEntry->DataLength = 0;
-                    pEntry->ExtraDataBytes = 0;
-
-                    BTree.WriteKey(ref *pEntry, key);
+                    BTree.WriteNewKey(pEntry, key);
                 }
 
                 // It is very important that the entry be properly initialized at this point.
@@ -418,30 +393,9 @@ namespace Squared.Data.Mangler {
                     serializerException = ex;
                 }
 
-                BTree.WriteModes writeMode;
-                if (foundExisting) {
-                    if (segment.Count > pEntry->DataLength + pEntry->ExtraDataBytes)
-                        writeMode = BTree.WriteModes.AppendData;
-                    else
-                        writeMode = BTree.WriteModes.ReplaceData;
-                } else {
-                    writeMode = BTree.WriteModes.AppendDataAndKey;
-                }
+                BTree.WriteData(pEntry, segment);
 
-                if (writeMode != BTree.WriteModes.ReplaceData)
-                    dataOffset = BTree.DataStream.AllocateSpace((uint)segment.Count);
-                else
-                    dataOffset = pEntry->DataOffset;
-
-                if (writeMode == BTree.WriteModes.AppendDataAndKey) {
-                    pEntry->DataOffset = (uint)dataOffset.GetValueOrDefault(0);
-                    pEntry->DataLength = (uint)segment.Count;
-                    pEntry->ExtraDataBytes = 0;
-                }
-
-                BTree.WriteData(ref *pEntry, ref segment, writeMode, dataOffset);
-
-                pEntry->KeyType = key.OriginalTypeId;
+                BTree.UnlockValue(pEntry, key.OriginalTypeId);
 
                 if (!foundExisting) {
                     // Finalize BTree after insert
@@ -490,7 +444,7 @@ namespace Squared.Data.Mangler {
 
             using (var range = BTree.AccessValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
                 var pEntry = (BTreeValue *)range.Pointer;
-                BTree.ReadData(ref *pEntry, Deserializer, out value);
+                BTree.ReadData(ref *pEntry, pEntry->KeyType, Deserializer, out value);
             }
             
             return true;
@@ -507,7 +461,7 @@ namespace Squared.Data.Mangler {
                 for (int i = 0; i < numValues; i++) {
                     var pEntry = (BTreeValue *)(range.Pointer + BTreeNode.OffsetOfValues + (i * BTreeValue.Size));
 
-                    BTree.ReadData(ref *pEntry, Deserializer, out output[i + outputOffset]);
+                    BTree.ReadData(ref *pEntry, pEntry->KeyType, Deserializer, out output[i + outputOffset]);
                 }
 
                 return numValues;
@@ -536,12 +490,12 @@ namespace Squared.Data.Mangler {
             using (var range = BTree.AccessValue(nodeIndex, valueIndex, MemoryMappedFileAccess.Read)) {
                 var pEntry = (BTreeValue *)range.Pointer;
 
-                BTree.ReadData(ref *pEntry, Deserializer, out result);
+                BTree.ReadData(ref *pEntry, pEntry->KeyType, Deserializer, out result);
             }
         }
 
-        private void ReadData (ref BTreeValue entry, out T value) {
-            BTree.ReadData(ref entry, Deserializer, out value);
+        private void ReadData (ref BTreeValue entry, ushort keyType, out T value) {
+            BTree.ReadData(ref entry, keyType, Deserializer, out value);
         }
 
         public void Dispose () {

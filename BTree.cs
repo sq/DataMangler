@@ -9,13 +9,6 @@ using Squared.Data.Mangler.Serialization;
 
 namespace Squared.Data.Mangler.Internal {
     internal unsafe class BTree : IDisposable {
-        public enum WriteModes {
-            Invalid,
-            AppendDataAndKey, // Append new data and new key
-            ReplaceData,      // Write new data over existing data
-            AppendData,       // Append new data, erase existing data
-        }
-
         public const uint CurrentFormatVersion = 4;
         public const int MaxSerializationBufferSize = 1024 * 64;
 
@@ -84,6 +77,42 @@ namespace Squared.Data.Mangler.Internal {
             unchecked {
                 long position = BTreeHeader.Size + ((nodeIndex * BTreeNode.TotalSize) + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));
                 return IndexStream.AccessRange(position, BTreeValue.Size, access);
+            }
+        }
+
+        public BTreeValue * LockValue (StreamRange nodeRange, long valueIndex, ushort keyType) {
+            unchecked {
+                var pEntry = (BTreeValue*)(nodeRange.Pointer + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));
+
+                if (pEntry->KeyType != keyType)
+                    throw new InvalidDataException();
+
+                pEntry->KeyType = 0;
+
+                return pEntry;
+            }
+        }
+
+        public BTreeValue* LockValue (StreamRange nodeRange, long valueIndex, out ushort keyType) {
+            unchecked {
+                var pEntry = (BTreeValue*)(nodeRange.Pointer + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));
+
+                if (pEntry->KeyType == 0)
+                    throw new InvalidDataException();
+
+                keyType = pEntry->KeyType;
+                pEntry->KeyType = 0;
+
+                return pEntry;
+            }
+        }
+
+        public void UnlockValue (BTreeValue * pEntry, ushort keyType) {
+            unchecked {
+                if (pEntry->KeyType != 0)
+                    throw new InvalidDataException();
+
+                pEntry->KeyType = keyType;
             }
         }
 
@@ -279,7 +308,6 @@ namespace Squared.Data.Mangler.Internal {
                 if (copyLength < 0)
                     throw new InvalidDataException();
 
-                // Move values
                 Native.memmove(
                     destPtr, (byte*)(&pValues[valueIndex]),
                     new UIntPtr((uint)copyLength)
@@ -293,12 +321,14 @@ namespace Squared.Data.Mangler.Internal {
                 if (copyLength < 0)
                     throw new InvalidDataException();
 
-                // Move leaves
                 Native.memmove(
                     destPtr, (byte*)(&pLeaves[valueIndex + 1]),
                     new UIntPtr((uint)copyLength)
                 );
             }
+
+            // If we don't mark the now-empty spot as invalid, later attempts to lock it will fail
+            pValues[valueIndex].KeyType = 0;
 
             pNode->NumValues += 1;
 
@@ -380,10 +410,6 @@ namespace Squared.Data.Mangler.Internal {
             }
         }
 
-        /// <summary>
-        /// Allocates space for a new BTree node.
-        /// </summary>
-        /// <returns>The index of the new node.</returns>
         private long CreateNode () {
             long offset = IndexStream.AllocateSpace(BTreeNode.TotalSize).Value;
             var newIndex = (offset - BTreeHeader.Size) / BTreeNode.TotalSize;
@@ -395,11 +421,6 @@ namespace Squared.Data.Mangler.Internal {
             return CreateRoot(RootIndex);
         }
 
-        /// <summary>
-        /// Creates a new BTree root node, replacing the old root node.
-        /// </summary>
-        /// <param name="oldRootIndex">The index of the old root node.</param>
-        /// <returns>The index of the new root node.</returns>
         private long CreateRoot (long oldRootIndex) {
             var newIndex = CreateNode();
 
@@ -459,13 +480,27 @@ namespace Squared.Data.Mangler.Internal {
             }
         }
 
-        public void ReadData<T> (ref BTreeValue entry, Deserializer<T> deserializer, out T value) {
-            if (entry.KeyType == 0)
-                throw new InvalidDataException();
+        public void WriteNewKey (BTreeValue * pEntry, TangleKey key) {
+            if (key.Data.Count > BTreeValue.KeyPrefixSize)
+                pEntry->KeyOffset = (uint)KeyStream.AllocateSpace((uint)key.Data.Count).Value;
+            else
+                pEntry->KeyOffset = 0;
 
+            pEntry->KeyLength = (ushort)key.Data.Count;
+
+            // It's important that we zero out these fields so that when we write the data,
+            //  it's done in append mode instead of replace mode
+            pEntry->DataOffset = 0;
+            pEntry->DataLength = 0;
+            pEntry->ExtraDataBytes = 0;
+
+            WriteKey(ref *pEntry, key);
+        }
+
+        public void ReadData<T> (ref BTreeValue entry, ushort keyType, Deserializer<T> deserializer, out T value) {
             fixed (BTreeValue* pEntry = &entry)
                 using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength)) {
-                    var context = new DeserializationContext(_GetKeyOfEntry, pEntry, range.Pointer, entry.DataLength);
+                    var context = new DeserializationContext(_GetKeyOfEntry, pEntry, keyType, range.Pointer, entry.DataLength);
                     try {
                         deserializer(ref context, out value);
                     } finally {
@@ -497,16 +532,26 @@ namespace Squared.Data.Mangler.Internal {
             return result;
         }
 
+        public void WriteData (BTreeValue * pEntry, ArraySegment<byte> data) {
+            bool append = (data.Count > pEntry->DataLength + pEntry->ExtraDataBytes);
+
+            long? dataOffset;
+            if (append)
+                dataOffset = DataStream.AllocateSpace((uint)data.Count);
+            else
+                dataOffset = pEntry->DataOffset;
+
+            WriteData(ref *pEntry, data, append, dataOffset);
+        }
+
         // BTreeValue must be fully prepared for the write operation:
         //  KeyOffset/KeyLength must be filled in.
         //  DataOffset/DataLength must be filled in.
         //  The BTreeValue's IsValid must be 0.
         // newOffset must specify the offset within the data stream where the data is to be written.
         //  In most cases this should be equal to DataOffset, but in the case of AppendData it will be different.
-        public void WriteData (ref BTreeValue btreeValue, ref ArraySegment<byte> data, WriteModes writeMode, long? dataOffset) {
+        public void WriteData (ref BTreeValue btreeValue, ArraySegment<byte> data, bool append, long? dataOffset) {
             if (btreeValue.KeyType != 0)
-                throw new InvalidDataException();
-            if (writeMode == WriteModes.Invalid)
                 throw new InvalidDataException();
 
             if (!dataOffset.HasValue) {
@@ -518,34 +563,35 @@ namespace Squared.Data.Mangler.Internal {
 
             var count = (uint)data.Count;
             var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
+            uint bytesToZero = 0;
 
-            if (writeMode == WriteModes.AppendData) {
-                using (var range = DataStream.AccessRange(btreeValue.DataOffset, btreeValue.DataLength, MemoryMappedFileAccess.Write))
-                    Unsafe.ZeroBytes(range.Pointer, 0, btreeValue.DataLength);
+            if (append) {
+                if (btreeValue.DataLength > 0) {
+                    using (var range = DataStream.AccessRange(btreeValue.DataOffset, btreeValue.DataLength, MemoryMappedFileAccess.Write))
+                        Unsafe.ZeroBytes(range.Pointer, 0, btreeValue.DataLength);
 
-                Interlocked.Add(ref pHeader->WastedDataBytes, btreeValue.DataLength + btreeValue.ExtraDataBytes);
+                    Interlocked.Add(ref pHeader->WastedDataBytes, btreeValue.DataLength + btreeValue.ExtraDataBytes);
+                }
 
                 btreeValue.DataOffset = (uint)dataOffset.Value;
                 btreeValue.DataLength = count;
                 btreeValue.ExtraDataBytes = 0;
-            } else if (writeMode != WriteModes.ReplaceData) {
+            } else {
                 if (dataOffset.HasValue)
                     btreeValue.DataOffset = (uint)dataOffset.Value;
 
+                bytesToZero = (btreeValue.DataLength + btreeValue.ExtraDataBytes) - count;
                 btreeValue.DataLength = count;
-                btreeValue.ExtraDataBytes = 0;
             }
 
             using (var range = DataStream.AccessRange(btreeValue.DataOffset, btreeValue.DataLength + btreeValue.ExtraDataBytes, MemoryMappedFileAccess.Write)) {
-                Unsafe.WriteBytes(range.Pointer, 0, data);
+                if (count > 0)
+                    Unsafe.WriteBytes(range.Pointer, 0, data);
 
-                if (writeMode == WriteModes.ReplaceData) {
-                    var bytesToZero = (btreeValue.DataLength + btreeValue.ExtraDataBytes) - count;
-                    if (bytesToZero > 0)
-                        Unsafe.ZeroBytes(range.Pointer, count, bytesToZero);
+                if (bytesToZero > 0) {
+                    Unsafe.ZeroBytes(range.Pointer, count, bytesToZero);
 
-                    btreeValue.ExtraDataBytes += bytesToZero;
-                    btreeValue.DataLength = count;
+                    btreeValue.ExtraDataBytes = bytesToZero;
                 }
             }
         }
