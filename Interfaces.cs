@@ -122,6 +122,8 @@ namespace Squared.Data.Mangler {
 
     public delegate TIndexKey IndexFunc<TIndexKey, TValue> (TValue value);
 
+    public delegate IEnumerable<TIndexKey> IndexMultipleFunc<TIndexKey, TValue> (TValue value);
+
     public delegate TangleKey TangleKeyConverter<TValue> (TValue value);
 }
 

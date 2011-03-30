@@ -14,23 +14,77 @@ namespace Squared.Data.Mangler {
         public abstract void Dispose ();
     }
 
+    internal struct IndexFunctionAdapter<TIndexKey, TValue> : IEnumerable<TIndexKey>, IEnumerator<TIndexKey> {
+        public readonly IndexFunc<TIndexKey, TValue> Function;
+        public readonly TValue Input;
+        private bool Advanced;
+
+        public IndexFunctionAdapter (IndexFunc<TIndexKey, TValue> function, ref TValue input) {
+            Function = function;
+            Input = input;
+            Advanced = false;
+        }
+
+        IEnumerator<TIndexKey> IEnumerable<TIndexKey>.GetEnumerator () {
+            return this;
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator () {
+            return this;
+        }
+
+        TIndexKey IEnumerator<TIndexKey>.Current {
+            get {
+                return Function(Input);
+            }
+        }
+
+        void IDisposable.Dispose () {
+        }
+
+        object System.Collections.IEnumerator.Current {
+            get {
+                return Function(Input);
+            }
+        }
+
+        bool System.Collections.IEnumerator.MoveNext () {
+            if (Advanced)
+                return false;
+
+            Advanced = true;
+            return true;
+        }
+
+        void System.Collections.IEnumerator.Reset () {
+            Advanced = false;
+        }
+    }
+
     public partial class Index<TIndexKey, TValue> : IndexBase<TValue> {
         public readonly Tangle<TValue> Tangle;
         public readonly string Name;
+
         public readonly IndexFunc<TIndexKey, TValue> IndexFunction;
+        public readonly IndexMultipleFunc<TIndexKey, TValue> IndexMultipleFunction;
 
         private readonly BTree BTree;
         private readonly TangleKeyConverter<TIndexKey> KeyConverter;
 
-        protected Index (Tangle<TValue> tangle, string name, IndexFunc<TIndexKey, TValue> function) {
-            IndexBase<TValue> temp;
-            if (tangle.Indices.TryGetValue(name, out temp))
-                throw new InvalidOperationException("An index with that name already exists");
+        protected Index (Tangle<TValue> tangle, string name, Delegate function) {
+            IndexFunction = function as IndexFunc<TIndexKey, TValue>;
+            IndexMultipleFunction = function as IndexMultipleFunc<TIndexKey, TValue>;
+
+            if ((IndexFunction == null) && (IndexMultipleFunction == null))
+                throw new InvalidOperationException("An index must have either an IndexFunc or IndexMultipleFunc");
 
             Tangle = tangle;
             Name = name;
-            IndexFunction = function;
             KeyConverter = TangleKey.GetConverter<TIndexKey>();
+
+            IndexBase<TValue> temp;
+            if (tangle.Indices.TryGetValue(name, out temp))
+                throw new InvalidOperationException("An index with that name already exists");
 
             BTree = new BTree(tangle.Storage, Name + "_");
 
@@ -52,6 +106,10 @@ namespace Squared.Data.Mangler {
         }
 
         public static Future<Index<TIndexKey, TValue>> Create (Tangle<TValue> tangle, string name, IndexFunc<TIndexKey, TValue> function) {
+            return tangle.QueueWorkItem(new CreateThunk(name, function));
+        }
+
+        public static Future<Index<TIndexKey, TValue>> Create (Tangle<TValue> tangle, string name, IndexMultipleFunc<TIndexKey, TValue> function) {
             return tangle.QueueWorkItem(new CreateThunk(name, function));
         }
 
@@ -79,48 +137,58 @@ namespace Squared.Data.Mangler {
             long nodeIndex;
             uint valueIndex;
 
-            TIndexKey synthesizedValue = IndexFunction(value);
-            TangleKey synthesizedKey = KeyConverter(synthesizedValue);
+            IEnumerable<TIndexKey> sequence;
 
-            bool foundExisting = BTree.FindKey(synthesizedKey, true, out nodeIndex, out valueIndex);
+            if (IndexFunction != null)
+                sequence = new IndexFunctionAdapter<TIndexKey, TValue>(
+                    IndexFunction, ref value
+                );
+            else
+                sequence = IndexMultipleFunction(value);
 
-            StreamRange range;
-            if (foundExisting) {
-                range = BTree.AccessNode(nodeIndex, true);
-            } else if (add) {
-                range = BTree.PrepareForInsert(nodeIndex, valueIndex);
-            } else {
-                throw new InvalidOperationException();
-            }
+            foreach (var synthesizedValue in sequence) {
+                TangleKey synthesizedKey = KeyConverter(synthesizedValue);
 
-            using (range) {
-                var pEntry = BTree.LockValue(range, valueIndex, foundExisting ? synthesizedKey.OriginalTypeId : (ushort)0);
+                bool foundExisting = BTree.FindKey(synthesizedKey, true, out nodeIndex, out valueIndex);
 
-                HashSet<TangleKey> keys;
+                StreamRange range;
                 if (foundExisting) {
-                    BTree.ReadData(pEntry, synthesizedKey.OriginalTypeId, DeserializeKeys, out keys);
+                    range = BTree.AccessNode(nodeIndex, true);
+                } else if (add) {
+                    range = BTree.PrepareForInsert(nodeIndex, valueIndex);
                 } else {
-                    BTree.WriteNewKey(pEntry, synthesizedKey);
-                    keys = new HashSet<TangleKey>();
+                    throw new InvalidOperationException();
                 }
 
-                if (add)
-                    keys.Add(key);
-                else
-                    keys.Remove(key);
+                using (range) {
+                    var pEntry = BTree.LockValue(range, valueIndex, foundExisting ? synthesizedKey.OriginalTypeId : (ushort)0);
 
-                ArraySegment<byte> data = BTree.Serialize(
-                    pEntry, SerializeKeys, synthesizedKey.OriginalTypeId, ref keys
-                );
+                    HashSet<TangleKey> keys;
+                    if (foundExisting) {
+                        BTree.ReadData(pEntry, synthesizedKey.OriginalTypeId, DeserializeKeys, out keys);
+                    } else {
+                        BTree.WriteNewKey(pEntry, synthesizedKey);
+                        keys = new HashSet<TangleKey>();
+                    }
 
-                BTree.WriteData(pEntry, data);
+                    if (add)
+                        keys.Add(key);
+                    else
+                        keys.Remove(key);
 
-                BTree.UnlockValue(pEntry, synthesizedKey.OriginalTypeId);
+                    ArraySegment<byte> data = BTree.Serialize(
+                        pEntry, SerializeKeys, synthesizedKey.OriginalTypeId, ref keys
+                    );
 
-                if (foundExisting)
-                    BTree.UnlockNode(range);
-                else
-                    BTree.FinalizeInsert(range);
+                    BTree.WriteData(pEntry, data);
+
+                    BTree.UnlockValue(pEntry, synthesizedKey.OriginalTypeId);
+
+                    if (foundExisting)
+                        BTree.UnlockNode(range);
+                    else
+                        BTree.FinalizeInsert(range);
+                }
             }
 
             if (add)

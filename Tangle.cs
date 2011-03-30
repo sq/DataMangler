@@ -153,6 +153,10 @@ namespace Squared.Data.Mangler {
             return Index<U, T>.Create(this, name, function);
         }
 
+        public Future<Index<U, T>> CreateIndex<U> (string name, IndexMultipleFunc<U, T> function) {
+            return Index<U, T>.Create(this, name, function);
+        }
+
         /// <summary>
         /// Reads a value from the tangle, looking it up via its key.
         /// </summary>

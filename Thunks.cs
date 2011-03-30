@@ -455,9 +455,9 @@ namespace Squared.Data.Mangler {
 
         private class CreateThunk : ThunkBase<Index<TIndexKey, TValue>> {
             public readonly string Name;
-            public readonly IndexFunc<TIndexKey, TValue> Function;
+            public readonly Delegate Function;
 
-            public CreateThunk (string name, IndexFunc<TIndexKey, TValue> function)
+            public CreateThunk (string name, Delegate function)
                 : base (null) {
                 Name = name;
                 Function = function;
