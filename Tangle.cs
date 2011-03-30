@@ -99,6 +99,7 @@ namespace Squared.Data.Mangler {
         public readonly TaskScheduler Scheduler;
         public readonly Serializer<T> Serializer;
         public readonly Deserializer<T> Deserializer;
+        public readonly Dictionary<string, IndexBase<T>> Indices = new Dictionary<string, IndexBase<T>>();
 
         protected readonly ReaderWriterLockSlim IndexLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
 
@@ -146,6 +147,10 @@ namespace Squared.Data.Mangler {
         /// <returns>A new batch instance.</returns>
         public Batch<T> CreateBatch (int capacity) {
             return new Batch<T>(this, capacity);
+        }
+
+        public Future<Index<U, T>> CreateIndex<U> (string name, IndexFunc<U, T> function) {
+            return Index<U, T>.Create(this, name, function);
         }
 
         /// <summary>
@@ -285,6 +290,12 @@ namespace Squared.Data.Mangler {
             return QueueWorkItem(new UpdateThunk(key, ref value, updateCallback));
         }
 
+        internal long NodeCount {
+            get {
+                return BTree.NodeCount;
+            }
+        }
+
         public long Count {
             get {
                 return BTree.ValueCount;
@@ -340,6 +351,19 @@ namespace Squared.Data.Mangler {
                 ushort keyType;
                 var pEntry = BTree.LockValue(range, valueIndex, out keyType);
 
+                if (Indices.Count > 0) {
+                    TangleKey key;
+                    T oldValue;
+
+                    BTree.ReadKey(pEntry, keyType, out key);
+                    ReadData(ref *pEntry, keyType, out oldValue);
+
+                    foreach (var index in Indices.Values) {
+                        index.OnValueRemoved(key, ref oldValue);
+                        index.OnValueAdded(key, ref value);
+                    }
+                }
+
                 var segment = BTree.Serialize(pEntry, Serializer, keyType, ref value);
 
                 BTree.WriteData(pEntry, segment);
@@ -394,16 +418,26 @@ namespace Squared.Data.Mangler {
                     serializerException = ex;
                 }
 
+                if ((Indices.Count > 0) && foundExisting) {
+                    T oldValue;
+                    ReadData(ref *pEntry, key.OriginalTypeId, out oldValue);
+
+                    foreach (var index in Indices.Values)
+                        index.OnValueRemoved(key, ref oldValue);
+                }
+
                 BTree.WriteData(pEntry, segment);
 
                 BTree.UnlockValue(pEntry, key.OriginalTypeId);
 
-                if (foundExisting) {
+                if (foundExisting)
                     BTree.UnlockNode(range);
-                } else {
+                else
                     BTree.FinalizeInsert(range);
-                }
             }
+
+            foreach (var index in Indices.Values)
+                index.OnValueAdded(key, ref value);
 
             // If the user's serializer throws, we wait until now to rethrow the exception so that
             //  we do not leave the index in an invalid state (in the case of a BTree insert).
@@ -426,7 +460,7 @@ namespace Squared.Data.Mangler {
             return true;
         }
 
-        private bool InternalGet (TangleKey key, out T value) {
+        internal bool InternalGet (TangleKey key, out T value) {
             long nodeIndex;
             uint valueIndex;
 
@@ -437,13 +471,39 @@ namespace Squared.Data.Mangler {
 
             using (var range = BTree.AccessValue(nodeIndex, valueIndex)) {
                 var pEntry = (BTreeValue *)range.Pointer;
-                BTree.ReadData(ref *pEntry, pEntry->KeyType, Deserializer, out value);
+                BTree.ReadData(ref *pEntry, Deserializer, out value);
             }
             
             return true;
         }
 
-        private int InternalGetNodeValues (long nodeIndex, T[] output, int outputOffset) {
+        private unsafe ushort GetValueCount (StreamRange range) {
+            var pNode = (BTreeNode*)range.Pointer;
+
+            return pNode->NumValues;
+        }
+
+        private unsafe KeyValuePair<TangleKey, T> GetNodeKeyValuePair (StreamRange range, uint valueIndex) {
+            var pEntry = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));
+
+            TangleKey key;
+            T value;
+            BTree.ReadKey(pEntry, out key);
+            BTree.ReadData(pEntry, Deserializer, out value);
+
+            return new KeyValuePair<TangleKey, T>(key, value);
+        }
+
+        internal IEnumerable<KeyValuePair<TangleKey, T>> InternalEnumerateNode (long nodeIndex) {
+            using (var range = BTree.AccessNode(nodeIndex, false)) {
+                var numValues = GetValueCount(range);
+
+                for (uint i = 0; i < numValues; i++)
+                    yield return GetNodeKeyValuePair(range, i);
+            }
+        }
+
+        internal int InternalGetNodeValues (long nodeIndex, T[] output, int outputOffset) {
             using (var range = BTree.AccessNode(nodeIndex, false)) {
                 var pNode = (BTreeNode *)range.Pointer;
 
@@ -451,14 +511,14 @@ namespace Squared.Data.Mangler {
                 for (int i = 0; i < numValues; i++) {
                     var pEntry = (BTreeValue *)(range.Pointer + BTreeNode.OffsetOfValues + (i * BTreeValue.Size));
 
-                    BTree.ReadData(ref *pEntry, pEntry->KeyType, Deserializer, out output[i + outputOffset]);
+                    BTree.ReadData(pEntry, Deserializer, out output[i + outputOffset]);
                 }
 
                 return numValues;
             }
         }
 
-        private int InternalGetNodeKeys (long nodeIndex, TangleKey[] output, int outputOffset) {
+        internal int InternalGetNodeKeys (long nodeIndex, TangleKey[] output, int outputOffset) {
             using (var range = BTree.AccessNode(nodeIndex, false)) {
                 var pNode = (BTreeNode*)range.Pointer;
 
@@ -466,7 +526,7 @@ namespace Squared.Data.Mangler {
                 for (int i = 0; i < numValues; i++) {
                     var pEntry = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues + (i * BTreeValue.Size));
 
-                    BTree.ReadKey(pEntry, pEntry->KeyType, out output[i + outputOffset]);
+                    BTree.ReadKey(pEntry, out output[i + outputOffset]);
                 }
 
                 return numValues;
@@ -477,12 +537,13 @@ namespace Squared.Data.Mangler {
             using (var range = BTree.AccessValue(nodeIndex, valueIndex)) {
                 var pEntry = (BTreeValue *)range.Pointer;
 
-                BTree.ReadData(ref *pEntry, pEntry->KeyType, Deserializer, out result);
+                BTree.ReadData(ref *pEntry, Deserializer, out result);
             }
         }
 
-        private void ReadData (ref BTreeValue entry, ushort keyType, out T value) {
-            BTree.ReadData(ref entry, keyType, Deserializer, out value);
+        private unsafe void ReadData (ref BTreeValue entry, ushort keyType, out T value) {
+            fixed (BTreeValue * pEntry = &entry)
+                BTree.ReadData(pEntry, keyType, Deserializer, out value);
         }
 
         public void Dispose () {

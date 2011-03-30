@@ -19,7 +19,6 @@ namespace Squared.Data.Mangler.Internal {
         public readonly StreamRef KeyStream;
         public readonly StreamRef DataStream;
 
-        private bool _IsDisposed;
         private StreamRange _HeaderRange;
         private readonly GetKeyOfEntryFunc _GetKeyOfEntry;
         private MemoryStream _SerializationBuffer;
@@ -216,71 +215,71 @@ namespace Squared.Data.Mangler.Internal {
             uint parentValueIndex = 0;
 
             fixed (byte* pKey = &key.Data.Array[key.Data.Offset])
-                while (currentNode >= 0 && currentNode < nodeCount)
-                    using (var range = AccessNode(currentNode, false)) {
-                        var pNode = (BTreeNode*)range.Pointer;
+            while (currentNode >= 0 && currentNode < nodeCount)
+            using (var range = AccessNode(currentNode, false)) {
+                var pNode = (BTreeNode*)range.Pointer;
 
-                        // As we descend the tree, we split any full nodes we encounter so that
-                        //  if we end up performing an insertion, we won't need to then walk all the
-                        //  way back *up* the tree and split in reverse.
-                        if (forInsertion && (pNode->NumValues == BTreeNode.MaxValues)) {
-                            if (parentNodeIndex == currentNode) {
-                                // Splitting the root.
-                                var newRootIndex = CreateRoot();
+                // As we descend the tree, we split any full nodes we encounter so that
+                //  if we end up performing an insertion, we won't need to then walk all the
+                //  way back *up* the tree and split in reverse.
+                if (forInsertion && (pNode->NumValues == BTreeNode.MaxValues)) {
+                    if (parentNodeIndex == currentNode) {
+                        // Splitting the root.
+                        var newRootIndex = CreateRoot();
 
-                                using (var newRootRange = AccessNode(newRootIndex, true)) {
-                                    var pNewRoot = (BTreeNode*)newRootRange.Pointer;
-                                    var pNewLeaves = (BTreeLeaf*)(newRootRange.Pointer + BTreeNode.OffsetOfLeaves);
+                        using (var newRootRange = AccessNode(newRootIndex, true)) {
+                            var pNewRoot = (BTreeNode*)newRootRange.Pointer;
+                            var pNewLeaves = (BTreeLeaf*)(newRootRange.Pointer + BTreeNode.OffsetOfLeaves);
 
-                                    // This looks wrong, but it's not: We want the new root to contain 0 values,
-                                    //  but have one leaf pointing to the old root, so that we can split the old
-                                    //  root in half. Splitting will move a single value up into the new root.
-                                    pNewRoot->HasLeaves = 1;
-                                    pNewLeaves[0].NodeIndex = (uint)currentNode;
+                            // This looks wrong, but it's not: We want the new root to contain 0 values,
+                            //  but have one leaf pointing to the old root, so that we can split the old
+                            //  root in half. Splitting will move a single value up into the new root.
+                            pNewRoot->HasLeaves = 1;
+                            pNewLeaves[0].NodeIndex = (uint)currentNode;
 
-                                    UnlockNode(newRootRange);
-                                }
-
-                                SplitLeafNode(newRootIndex, 0, currentNode);
-
-                                // Restart at the root
-                                nodeCount += 2;
-                                currentNode = parentNodeIndex = rootIndex = newRootIndex;
-                                parentValueIndex = 0;
-                                continue;
-                            } else {
-                                // Splitting a regular node.
-                                SplitLeafNode(parentNodeIndex, parentValueIndex, currentNode);
-
-                                // Restart at the root
-                                nodeCount += 1;
-                                currentNode = parentNodeIndex = rootIndex;
-                                parentValueIndex = 0;
-                                continue;
-                            }
+                            UnlockNode(newRootRange);
                         }
 
-                        var pValues = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues);
-                        if (SearchValues(pValues, pNode->NumValues, pKey, keyLength, out valueIndex)) {
-                            // Found an exact match within the BTree node.
-                            nodeIndex = currentNode;
-                            return true;
-                        }
+                        SplitLeafNode(newRootIndex, 0, currentNode);
 
-                        if (pNode->HasLeaves == 1) {
-                            // No exact match was found, so valueIndex now contains the index of the leaf node.
-                            var pLeaves = (BTreeLeaf*)(range.Pointer + BTreeNode.OffsetOfLeaves);
+                        // Restart at the root
+                        nodeCount += 2;
+                        currentNode = parentNodeIndex = rootIndex = newRootIndex;
+                        parentValueIndex = 0;
+                        continue;
+                    } else {
+                        // Splitting a regular node.
+                        SplitLeafNode(parentNodeIndex, parentValueIndex, currentNode);
 
-                            parentNodeIndex = currentNode;
-                            parentValueIndex = valueIndex;
-
-                            currentNode = pLeaves[valueIndex].NodeIndex;
-                        } else {
-                            // The value was not found inside the node, and we're in a node with no leaves, so there is no match.
-                            nodeIndex = currentNode;
-                            return false;
-                        }
+                        // Restart at the root
+                        nodeCount += 1;
+                        currentNode = parentNodeIndex = rootIndex;
+                        parentValueIndex = 0;
+                        continue;
                     }
+                }
+
+                var pValues = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues);
+                if (SearchValues(pValues, pNode->NumValues, pKey, keyLength, out valueIndex)) {
+                    // Found an exact match within the BTree node.
+                    nodeIndex = currentNode;
+                    return true;
+                }
+
+                if (pNode->HasLeaves == 1) {
+                    // No exact match was found, so valueIndex now contains the index of the leaf node.
+                    var pLeaves = (BTreeLeaf*)(range.Pointer + BTreeNode.OffsetOfLeaves);
+
+                    parentNodeIndex = currentNode;
+                    parentValueIndex = valueIndex;
+
+                    currentNode = pLeaves[valueIndex].NodeIndex;
+                } else {
+                    // The value was not found inside the node, and we're in a node with no leaves, so there is no match.
+                    nodeIndex = currentNode;
+                    return false;
+                }
+            }
 
             throw new InvalidDataException("Current node left the index");
         }
@@ -446,6 +445,11 @@ namespace Squared.Data.Mangler.Internal {
             CreateRoot();
         }
 
+        public bool ReadKey (BTreeValue* pEntry, out TangleKey key) {
+            ushort keyType = pEntry->KeyType;
+            return ReadKey(pEntry, keyType, out key);
+        }
+
         public bool ReadKey (BTreeValue* pEntry, ushort keyType, out TangleKey key) {
             if (keyType == 0) {
                 key = default(TangleKey);
@@ -502,13 +506,21 @@ namespace Squared.Data.Mangler.Internal {
             if (keyType == 0)
                 throw new InvalidDataException();
 
-            ReadData(ref entry, keyType, deserializer, out value);
+            fixed (BTreeValue * pEntry = &entry)
+                ReadData(pEntry, keyType, deserializer, out value);
         }
 
-        public void ReadData<T> (ref BTreeValue entry, ushort keyType, Deserializer<T> deserializer, out T value) {
-            fixed (BTreeValue* pEntry = &entry)
-            using (var range = DataStream.AccessRange(entry.DataOffset, entry.DataLength)) {
-                var context = new DeserializationContext(_GetKeyOfEntry, pEntry, keyType, range.Pointer, entry.DataLength);
+        public void ReadData<T> (BTreeValue * pEntry, Deserializer<T> deserializer, out T value) {
+            var keyType = pEntry->KeyType;
+            if (keyType == 0)
+                throw new InvalidDataException();
+
+            ReadData(pEntry, keyType, deserializer, out value);
+        }
+
+        public unsafe void ReadData<T> (BTreeValue * pEntry, ushort keyType, Deserializer<T> deserializer, out T value) {
+            using (var range = DataStream.AccessRange(pEntry->DataOffset, pEntry->DataLength)) {
+                var context = new DeserializationContext(_GetKeyOfEntry, pEntry, keyType, range.Pointer, pEntry->DataLength);
                 try {
                     deserializer(ref context, out value);
                 } finally {
@@ -614,6 +626,17 @@ namespace Squared.Data.Mangler.Internal {
         public long NodeCount {
             get {
                 return (IndexStream.Length - BTreeHeader.Size) / BTreeNode.TotalSize;
+            }
+        }
+
+        public long MutationSentinel {
+            get {
+                var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
+                return pHeader->MutationSentinel;
+            }
+            set {
+                var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
+                pHeader->MutationSentinel = value;
             }
         }
 

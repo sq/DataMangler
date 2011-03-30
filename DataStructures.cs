@@ -27,6 +27,7 @@ namespace Squared.Data.Mangler.Internal {
         public long RootIndex;
         public long WastedDataBytes;
         public long ItemCount;
+        public long MutationSentinel;
 
         static BTreeHeader () {
             Size = (uint)Marshal.SizeOf(typeof(BTreeHeader));

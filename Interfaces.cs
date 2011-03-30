@@ -120,7 +120,7 @@ namespace Squared.Data.Mangler {
     public delegate TOut JoinValueSelector<TLeftKey, TLeft, TRightKey, TRight, out TOut> 
         (TLeftKey leftKey, ref TLeft leftValue, TRightKey rightKey, ref TRight rightValue);
 
-    public delegate TKey IndexFunc<TKey, TValue> (TValue value);
+    public delegate TIndexKey IndexFunc<TIndexKey, TValue> (TValue value);
 
     public delegate TangleKey TangleKeyConverter<TValue> (TValue value);
 }

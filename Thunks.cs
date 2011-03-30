@@ -443,4 +443,141 @@ namespace Squared.Data.Mangler {
             }
         }
     }
+
+    public partial class Index<TIndexKey, TValue> {
+        private abstract class ThunkBase<U> : Tangle<TValue>.ThunkBase<U> {
+            public readonly Index<TIndexKey, TValue> Index;
+
+            public ThunkBase (Index<TIndexKey, TValue> index) {
+                Index = index;
+            }
+        }
+
+        private class CreateThunk : ThunkBase<Index<TIndexKey, TValue>> {
+            public readonly string Name;
+            public readonly IndexFunc<TIndexKey, TValue> Function;
+
+            public CreateThunk (string name, IndexFunc<TIndexKey, TValue> function)
+                : base (null) {
+                Name = name;
+                Function = function;
+            }
+
+            protected override void OnExecute (Tangle<TValue> tangle, out Index<TIndexKey, TValue> result) {
+                result = new Index<TIndexKey, TValue>(tangle, Name, Function);
+            }
+        }
+
+        private class FindOneThunk : ThunkBase<TangleKey> {
+            public readonly TangleKey Key;
+
+            public FindOneThunk (Index<TIndexKey, TValue> index, TangleKey key)
+                : base(index) {
+                    Key = key;
+            }
+
+            protected override unsafe void OnExecute (Tangle<TValue> tangle, out TangleKey result) {
+                long nodeIndex;
+                uint valueIndex;
+
+                if (Index.BTree.FindKey(Key, false, out nodeIndex, out valueIndex)) {
+                    HashSet<TangleKey> keys;
+                    using (var range = Index.BTree.AccessValue(nodeIndex, valueIndex))
+                        Index.BTree.ReadData((BTreeValue *)range.Pointer, Index<TIndexKey, TValue>.DeserializeKeys, out keys);
+
+                    if (keys.Count == 0) {
+                        Fail(new KeyNotFoundException(Key));
+                        result = default(TangleKey);
+                    } else
+                        result = keys.First();
+                } else {
+                    result = default(TangleKey);
+                    Fail(new KeyNotFoundException(Key));
+                }
+            }
+        }
+
+        private class GetOneThunk : ThunkBase<TValue> {
+            public readonly TangleKey Key;
+
+            public GetOneThunk (Index<TIndexKey, TValue> index, TangleKey key)
+                : base(index) {
+                Key = key;
+            }
+
+            protected override unsafe void OnExecute (Tangle<TValue> tangle, out TValue result) {
+                long nodeIndex;
+                uint valueIndex;
+
+                if (Index.BTree.FindKey(Key, false, out nodeIndex, out valueIndex)) {
+                    HashSet<TangleKey> keys;
+
+                    using (var range = Index.BTree.AccessValue(nodeIndex, valueIndex))
+                        Index.BTree.ReadData((BTreeValue*)range.Pointer, Index<TIndexKey, TValue>.DeserializeKeys, out keys);
+                    
+                    var firstKey = keys.First();
+                    if (!tangle.InternalGet(firstKey, out result))
+                        Fail(new KeyNotFoundException(firstKey));
+                } else {
+                    result = default(TValue);
+                    Fail(new KeyNotFoundException(Key));
+                }
+            }
+        }
+
+        private class FindThunk : ThunkBase<TangleKey[]> {
+            public readonly TangleKey Key;
+
+            public FindThunk (Index<TIndexKey, TValue> index, TangleKey key)
+                : base(index) {
+                    Key = key;
+            }
+
+            protected override unsafe void OnExecute (Tangle<TValue> tangle, out TangleKey[] result) {
+                long nodeIndex;
+                uint valueIndex;
+
+                result = null;
+                if (Index.BTree.FindKey(Key, false, out nodeIndex, out valueIndex)) {
+                    HashSet<TangleKey> keys;
+                    using (var range = Index.BTree.AccessValue(nodeIndex, valueIndex))
+                        Index.BTree.ReadData((BTreeValue *)range.Pointer, Index<TIndexKey, TValue>.DeserializeKeys, out keys);
+
+                    result = keys.ToArray();
+                } else {
+                    Fail(new KeyNotFoundException(Key));
+                }
+            }
+        }
+
+        private class GetThunk : ThunkBase<TValue[]> {
+            public readonly TangleKey Key;
+
+            public GetThunk (Index<TIndexKey, TValue> index, TangleKey key)
+                : base(index) {
+                Key = key;
+            }
+
+            protected override unsafe void OnExecute (Tangle<TValue> tangle, out TValue[] result) {
+                long nodeIndex;
+                uint valueIndex;
+
+                result = null;
+                if (Index.BTree.FindKey(Key, false, out nodeIndex, out valueIndex)) {
+                    HashSet<TangleKey> keys;
+                    using (var range = Index.BTree.AccessValue(nodeIndex, valueIndex))
+                        Index.BTree.ReadData((BTreeValue*)range.Pointer, Index<TIndexKey, TValue>.DeserializeKeys, out keys);
+
+                    result = new TValue[keys.Count];
+                    int i = 0;
+                    foreach (var key in keys) {
+                        tangle.InternalGet(key, out result[i]);
+                        i += 1;
+                    }
+                } else {
+                    Fail(new KeyNotFoundException(Key));
+                }
+            }
+        }
+    }
 }
