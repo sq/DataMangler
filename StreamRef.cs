@@ -407,6 +407,11 @@ namespace Squared.Data.Mangler.Internal {
             return oldSize;
         }
 
+        public unsafe long Shrink (int size) {
+            using (var header = AccessHeader())
+                return Interlocked.Add(ref header.Ptr->DataLength, -size);
+        }
+
         public unsafe uint FormatVersion {
             get {
                 using (var header = AccessHeader())

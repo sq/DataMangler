@@ -18,6 +18,7 @@ namespace Squared.Data.Mangler.Internal {
         public readonly StreamRef IndexStream;
         public readonly StreamRef KeyStream;
         public readonly StreamRef DataStream;
+        public readonly StreamRef FreelistStream;
 
         private StreamRange _HeaderRange;
         private readonly GetKeyOfEntryFunc _GetKeyOfEntry;
@@ -30,10 +31,12 @@ namespace Squared.Data.Mangler.Internal {
             IndexStream = Storage.Open(prefix + "index");
             KeyStream = Storage.Open(prefix + "keys");
             DataStream = Storage.Open(prefix + "data");
+            FreelistStream = Storage.Open(prefix + "freelist");
 
             VersionCheck(IndexStream);
             VersionCheck(KeyStream);
             VersionCheck(DataStream);
+            VersionCheck(FreelistStream);
 
             bool needInit = IndexStream.Length < BTreeHeader.Size;
 
@@ -552,16 +555,64 @@ namespace Squared.Data.Mangler.Internal {
             return result;
         }
 
+        private unsafe long? FreelistGet (ref uint size) {
+            long count = FreelistStream.Length / FreelistNode.Size;
+
+            using (var range = FreelistStream.AccessRange(0, (uint)FreelistStream.Length, MemoryMappedFileAccess.ReadWrite))
+            for (long i = 0; i < count; i++) {
+                FreelistNode * pNode = (FreelistNode *)(range.Pointer + (i * FreelistNode.Size));
+
+                if (pNode->BlockSize >= size) {
+                    var offset = pNode->BlockOffset;
+                    size = pNode->BlockSize;
+
+                    Native.memmove((byte *)pNode, (range.Pointer + (FreelistStream.Length - FreelistNode.Size)), new UIntPtr(FreelistNode.Size));
+                    FreelistStream.Shrink((int)FreelistNode.Size);
+
+                    var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
+                    Interlocked.Add(ref pHeader->WastedDataBytes, -size);
+
+                    return offset;
+                }
+            }
+
+            return null;
+        }
+
+        private unsafe void FreelistPut (long blockOffset, uint blockSize) {
+            long? offset = FreelistStream.AllocateSpace(FreelistNode.Size);
+
+            using (var range = FreelistStream.AccessRange(offset.Value, FreelistNode.Size, MemoryMappedFileAccess.ReadWrite)) {
+                FreelistNode* pNode = (FreelistNode *)range.Pointer;
+                pNode->BlockOffset = (uint)blockOffset;
+                pNode->BlockSize = blockSize;
+            }
+
+            var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
+            Interlocked.Add(ref pHeader->WastedDataBytes, blockSize);
+        }
+
+        private long? AllocateDataSpace (ref uint size) {
+            size = ((size + 3) / 4) * 4;
+
+            var result = FreelistGet(ref size);
+            if (!result.HasValue)
+                result = DataStream.AllocateSpace(size);
+
+            return result;
+        }
+
         public void WriteData (BTreeValue * pEntry, ArraySegment<byte> data) {
             bool append = (data.Count > pEntry->DataLength + pEntry->ExtraDataBytes);
 
             long? dataOffset;
+            uint size = (uint)data.Count;
             if (append)
-                dataOffset = DataStream.AllocateSpace((uint)data.Count);
+                dataOffset = AllocateDataSpace(ref size);
             else
                 dataOffset = pEntry->DataOffset;
 
-            WriteData(ref *pEntry, data, append, dataOffset);
+            WriteData(ref *pEntry, data, append, dataOffset, size);
         }
 
         // BTreeValue must be fully prepared for the write operation:
@@ -570,7 +621,7 @@ namespace Squared.Data.Mangler.Internal {
         //  The BTreeValue's IsValid must be 0.
         // newOffset must specify the offset within the data stream where the data is to be written.
         //  In most cases this should be equal to DataOffset, but in the case of AppendData it will be different.
-        public void WriteData (ref BTreeValue btreeValue, ArraySegment<byte> data, bool append, long? dataOffset) {
+        private void WriteData (ref BTreeValue btreeValue, ArraySegment<byte> data, bool append, long? dataOffset, uint size) {
             if (btreeValue.KeyType != 0)
                 throw new InvalidDataException();
 
@@ -582,7 +633,6 @@ namespace Squared.Data.Mangler.Internal {
             }
 
             var count = (uint)data.Count;
-            var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
             uint bytesToZero = 0;
 
             if (append) {
@@ -590,29 +640,27 @@ namespace Squared.Data.Mangler.Internal {
                     using (var range = DataStream.AccessRange(btreeValue.DataOffset, btreeValue.DataLength, MemoryMappedFileAccess.Write))
                         Unsafe.ZeroBytes(range.Pointer, 0, btreeValue.DataLength);
 
-                    Interlocked.Add(ref pHeader->WastedDataBytes, btreeValue.DataLength + btreeValue.ExtraDataBytes);
+                    FreelistPut(btreeValue.DataOffset, btreeValue.DataLength);
                 }
 
                 btreeValue.DataOffset = (uint)dataOffset.Value;
                 btreeValue.DataLength = count;
-                btreeValue.ExtraDataBytes = 0;
+                btreeValue.ExtraDataBytes = size - count;
             } else {
                 if (dataOffset.HasValue)
                     btreeValue.DataOffset = (uint)dataOffset.Value;
 
                 bytesToZero = (btreeValue.DataLength + btreeValue.ExtraDataBytes) - count;
                 btreeValue.DataLength = count;
+                btreeValue.ExtraDataBytes = bytesToZero;
             }
 
             using (var range = DataStream.AccessRange(btreeValue.DataOffset, btreeValue.DataLength + btreeValue.ExtraDataBytes, MemoryMappedFileAccess.Write)) {
                 if (count > 0)
                     Unsafe.WriteBytes(range.Pointer, 0, data);
 
-                if (bytesToZero > 0) {
+                if (bytesToZero > 0)
                     Unsafe.ZeroBytes(range.Pointer, count, bytesToZero);
-
-                    btreeValue.ExtraDataBytes = bytesToZero;
-                }
             }
         }
 
@@ -657,6 +705,7 @@ namespace Squared.Data.Mangler.Internal {
         public void Dispose () {
             IndexStream.Dispose();
             KeyStream.Dispose();
+            DataStream.Dispose();
         }
     }
 }

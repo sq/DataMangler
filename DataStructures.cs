@@ -41,7 +41,7 @@ namespace Squared.Data.Mangler.Internal {
         public static readonly uint OffsetOfValues;
         public static readonly uint OffsetOfLeaves;
 
-        public const int T = 32;
+        public const int T = 36;
         public const int MaxValues = (2 * T) - 1;
         public const int MaxLeaves = MaxValues + 1;
 
@@ -51,6 +51,12 @@ namespace Squared.Data.Mangler.Internal {
 
             Size = (uint)Marshal.SizeOf(typeof(BTreeNode));
             TotalSize = Size + (MaxValues * BTreeValue.Size) + (MaxLeaves * BTreeLeaf.Size);
+
+            // Round nodes up to a size of 2KB
+            if (TotalSize > 2048)
+                throw new InvalidDataException();
+            TotalSize = 2048;
+
             OffsetOfValues = Size;
             OffsetOfLeaves = OffsetOfValues + (MaxValues * BTreeValue.Size);
         }
@@ -91,5 +97,17 @@ namespace Squared.Data.Mangler.Internal {
         public ushort KeyLength;
         public ushort KeyType;
         public fixed byte KeyPrefix[KeyPrefixSize];
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal unsafe struct FreelistNode {
+        public static readonly uint Size;
+
+        static FreelistNode () {
+            Size = (uint)Marshal.SizeOf(typeof(FreelistNode));
+        }
+
+        public uint BlockOffset;
+        public uint BlockSize;
     }
 }

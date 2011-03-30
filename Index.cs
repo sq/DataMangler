@@ -7,9 +7,11 @@ using Squared.Data.Mangler.Internal;
 using Squared.Task;
 
 namespace Squared.Data.Mangler {
-    public abstract class IndexBase<TValue> {
+    public abstract class IndexBase<TValue> : IDisposable {
         internal abstract void OnValueRemoved (TangleKey key, ref TValue oldValue);
         internal abstract void OnValueAdded (TangleKey key, ref TValue newValue);
+
+        public abstract void Dispose ();
     }
 
     public partial class Index<TIndexKey, TValue> : IndexBase<TValue> {
@@ -120,6 +122,11 @@ namespace Squared.Data.Mangler {
                 else
                     BTree.FinalizeInsert(range);
             }
+
+            if (add)
+                BTree.MutationSentinel += 1;
+            else
+                BTree.MutationSentinel -= 1;
         }
 
         internal override void OnValueRemoved (TangleKey key, ref TValue oldValue) {
@@ -168,6 +175,10 @@ namespace Squared.Data.Mangler {
                 output.Add(new TangleKey(keyBytes, keyType));
                 offset += (uint)keyLength;
             }
+        }
+
+        public override void Dispose () {
+            BTree.Dispose();
         }
     }
 }

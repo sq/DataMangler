@@ -642,6 +642,54 @@ namespace Squared.Data.Mangler.Tests {
             Assert.AreEqual(largerString, Scheduler.WaitFor(Tangle.Get(1)));
             Assert.AreEqual(0, Tangle.WastedDataBytes);
         }
+
+        [Test]
+        public void TestRepeatedGrowAndShrink () {
+            var wasted1 = Tangle.WastedDataBytes;
+
+            for (int i = 1; i < 50; i += 10) {
+                for (int j = 0; j < 20; j++) {
+                    var key = new TangleKey(String.Format("test{0}", j));
+                    var text = new String((char)(j + 63), i);
+
+                    Scheduler.WaitFor(Tangle.Set(key, text));
+
+                    Assert.AreEqual(
+                        text, Scheduler.WaitFor(Tangle.Get(key))
+                    );
+                }
+            }
+
+            var wasted2 = Tangle.WastedDataBytes;
+            Assert.Greater(wasted2, wasted1);
+
+            for (int j = 0; j < 20; j++) {
+                var key = new TangleKey(String.Format("test{0}", j));
+                var text = new String((char)(j + 63), 5);
+
+                Scheduler.WaitFor(Tangle.Set(key, text));
+
+                Assert.AreEqual(
+                    text, Scheduler.WaitFor(Tangle.Get(key))
+                );
+            }
+
+            var wasted3 = Tangle.WastedDataBytes;
+            Assert.AreEqual(wasted3, wasted2);
+
+            for (int j = 20; j < 40; j++) {
+                var key = new TangleKey(String.Format("test{0}", j));
+                var text = new String((char)(j + 63), 10);
+
+                Scheduler.WaitFor(Tangle.Set(key, text));
+
+                Assert.AreEqual(
+                    text, Scheduler.WaitFor(Tangle.Get(key))
+                );
+            }
+
+            Assert.Less(Tangle.WastedDataBytes, wasted3);
+        }
     }
 
     [TestFixture]

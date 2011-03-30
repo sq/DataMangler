@@ -563,6 +563,10 @@ namespace Squared.Data.Mangler {
 
             BTree.Dispose();
 
+            foreach (var index in Indices.Values)
+                index.Dispose();
+            Indices.Clear();
+
             if (OwnsStorage)
                 Storage.Dispose();
         }
