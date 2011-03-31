@@ -196,6 +196,13 @@ namespace Squared.Data.Mangler {
     }
 
     public static class ImmutableBufferPool {
+        public static ArraySegment<byte> GetBytes (byte value) {
+            var result = ImmutableArrayPool<byte>.Allocate(1);
+            result.Array[result.Offset] = value;
+
+            return result;
+        }
+
         public unsafe static ArraySegment<byte> GetBytes (short value) {
             var result = ImmutableArrayPool<byte>.Allocate(2);
 

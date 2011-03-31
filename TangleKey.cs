@@ -34,6 +34,9 @@ namespace Squared.Data.Mangler {
 
             RegisterType<string>();
             RegisterType<byte[]>();
+            RegisterType<byte>();
+            RegisterType<ushort>();
+            RegisterType<short>();
             RegisterType<uint>();
             RegisterType<int>();
             RegisterType<ulong>();
@@ -76,16 +79,28 @@ namespace Squared.Data.Mangler {
         public readonly ushort OriginalTypeId;
         public readonly ArraySegment<byte> Data;
 
+        public TangleKey (byte key)
+            : this(ImmutableBufferPool.GetBytes(key), typeof(byte)) {
+        }
+
+        public TangleKey (ushort key)
+            : this(ImmutableBufferPool.GetBytes(key), typeof(ushort)) {
+        }
+
+        public TangleKey (short key)
+            : this(ImmutableBufferPool.GetBytes(key), typeof(short)) {
+        }
+
         public TangleKey (uint key)
             : this(ImmutableBufferPool.GetBytes(key), typeof(uint)) {
         }
 
-        public TangleKey (ulong key)
-            : this(ImmutableBufferPool.GetBytes(key), typeof(ulong)) {
-        }
-
         public TangleKey (int key)
             : this(ImmutableBufferPool.GetBytes(key), typeof(int)) {
+        }
+
+        public TangleKey (ulong key)
+            : this(ImmutableBufferPool.GetBytes(key), typeof(ulong)) {
         }
 
         public TangleKey (long key)
