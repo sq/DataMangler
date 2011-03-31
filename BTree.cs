@@ -604,6 +604,8 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         private unsafe long? FreelistGet (ref uint size) {
+            return null;
+
             long count = FreelistStream.Length / FreelistNode.Size;
 
             using (var range = FreelistStream.AccessRange(0, (uint)FreelistStream.Length, MemoryMappedFileAccess.ReadWrite))
@@ -628,12 +630,14 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         private unsafe void FreelistPut (long blockOffset, uint blockSize) {
-            long? offset = FreelistStream.AllocateSpace(FreelistNode.Size);
+            if (false) {
+                long? offset = FreelistStream.AllocateSpace(FreelistNode.Size);
 
-            using (var range = FreelistStream.AccessRange(offset.Value, FreelistNode.Size, MemoryMappedFileAccess.ReadWrite)) {
-                FreelistNode* pNode = (FreelistNode *)range.Pointer;
-                pNode->BlockOffset = (uint)blockOffset;
-                pNode->BlockSize = blockSize;
+                using (var range = FreelistStream.AccessRange(offset.Value, FreelistNode.Size, MemoryMappedFileAccess.ReadWrite)) {
+                    FreelistNode* pNode = (FreelistNode*)range.Pointer;
+                    pNode->BlockOffset = (uint)blockOffset;
+                    pNode->BlockSize = blockSize;
+                }
             }
 
             var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
