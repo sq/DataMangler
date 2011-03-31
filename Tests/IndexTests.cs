@@ -34,7 +34,7 @@ namespace Squared.Data.Mangler.Tests {
 
         [Test]
         public void IndexUpdatedWhenAddingNewValues () {
-            var ByValue = Scheduler.WaitFor(Tangle.CreateIndex("ByValue", (v) => v));
+            var ByValue = Scheduler.WaitFor(Tangle.CreateIndex("ByValue", (ref string v) => v));
 
             var key = new TangleKey("hello");
             var value = "world";
@@ -47,7 +47,7 @@ namespace Squared.Data.Mangler.Tests {
 
         [Test]
         public void IndexHandlesMultipleKeysForTheSameValue () {
-            var ByValue = Scheduler.WaitFor(Tangle.CreateIndex("ByValue", (v) => v));
+            var ByValue = Scheduler.WaitFor(Tangle.CreateIndex("ByValue", (ref string v) => v));
 
             var key1 = new TangleKey("hello");
             var key2 = new TangleKey("greetings");
@@ -68,7 +68,7 @@ namespace Squared.Data.Mangler.Tests {
 
         [Test]
         public void IndexUpdatedWhenValueChanged () {
-            var ByValue = Scheduler.WaitFor(Tangle.CreateIndex("ByValue", (v) => v));
+            var ByValue = Scheduler.WaitFor(Tangle.CreateIndex("ByValue", (ref string v) => v));
 
             var key = new TangleKey("hello");
             var value1 = "world";
@@ -100,7 +100,7 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set(key1, value1));
             Scheduler.WaitFor(Tangle.Set(key2, value2));
 
-            var ByValue = Scheduler.WaitFor(Tangle.CreateIndex("ByValue", (v) => v));
+            var ByValue = Scheduler.WaitFor(Tangle.CreateIndex("ByValue", (ref string v) => v));
 
             Assert.AreEqual(key1, Scheduler.WaitFor(ByValue.FindOne(value1)));
             Assert.AreEqual(key2, Scheduler.WaitFor(ByValue.FindOne(value2)));
@@ -112,7 +112,7 @@ namespace Squared.Data.Mangler.Tests {
             //  it assumes a type of <string[]> instead of picking the IEnumerable overload.
             var ByWords = Scheduler.WaitFor(Tangle.CreateIndex<string>(
                 "ByWords", 
-                (v) => v.Split(' ')
+                (string v) => v.Split(' ')
             ));
 
             var key1 = new TangleKey("a");

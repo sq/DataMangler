@@ -22,6 +22,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using NUnit.Framework;
+using Squared.Data.Mangler.Internal;
 using Squared.Data.Mangler.Serialization;
 using Squared.Task;
 using System.IO;
@@ -689,6 +690,44 @@ namespace Squared.Data.Mangler.Tests {
             }
 
             Assert.Less(Tangle.WastedDataBytes, wasted3);
+        }
+
+        [Test]
+        public unsafe void TestLockExistingData () {
+            var key = new TangleKey("test");
+            var value = "abcdefgh";
+            Scheduler.WaitFor(Tangle.Set(key, value));
+
+            var findResult = Scheduler.WaitFor(Tangle.Find(key));
+            var expectedBytes = Encoding.UTF8.GetBytes(value);
+
+            fixed (byte * pExpected = expectedBytes)
+            using (var data = Scheduler.WaitFor(findResult.LockData())) {
+                Assert.AreEqual(expectedBytes.Length, data.Size);
+                Assert.AreEqual(0, Native.memcmp(
+                    pExpected, data.Pointer, 
+                    new UIntPtr((uint)Math.Min(data.Size, expectedBytes.Length))
+                ));
+            }
+        }
+
+        [Test]
+        public unsafe void TestGrowAndAlterDataByLockingIt () {
+            var key = new TangleKey("test");
+            var value = "abcdefgh";
+            var newValue = "acdefghijkl";
+            Scheduler.WaitFor(Tangle.Set(key, value));
+
+            var findResult = Scheduler.WaitFor(Tangle.Find(key));
+            var newBytes = Encoding.UTF8.GetBytes(newValue);
+
+            fixed (byte* pNewBytes = newBytes)
+            using (var data = Scheduler.WaitFor(findResult.LockData(newBytes.Length))) {
+                Assert.GreaterOrEqual(data.Size, newBytes.Length);
+                Native.memmove(data.Pointer, pNewBytes, new UIntPtr((uint)newBytes.Length));
+            }
+
+            Assert.AreEqual(newValue, Scheduler.WaitFor(Tangle.Get(key)));
         }
     }
 

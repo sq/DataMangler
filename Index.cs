@@ -16,7 +16,7 @@ namespace Squared.Data.Mangler {
 
     internal struct IndexFunctionAdapter<TIndexKey, TValue> : IEnumerable<TIndexKey>, IEnumerator<TIndexKey> {
         public readonly IndexFunc<TIndexKey, TValue> Function;
-        public readonly TValue Input;
+        public TValue Input;
         private bool Advanced;
 
         public IndexFunctionAdapter (IndexFunc<TIndexKey, TValue> function, ref TValue input) {
@@ -35,7 +35,7 @@ namespace Squared.Data.Mangler {
 
         TIndexKey IEnumerator<TIndexKey>.Current {
             get {
-                return Function(Input);
+                return Function(ref Input);
             }
         }
 
@@ -44,7 +44,7 @@ namespace Squared.Data.Mangler {
 
         object System.Collections.IEnumerator.Current {
             get {
-                return Function(Input);
+                return Function(ref Input);
             }
         }
 
@@ -160,34 +160,102 @@ namespace Squared.Data.Mangler {
                     throw new InvalidOperationException();
                 }
 
+                long minimumSize;
                 using (range) {
-                    var pEntry = BTree.LockValue(range, valueIndex, foundExisting ? synthesizedKey.OriginalTypeId : (ushort)0);
+                    if (!foundExisting)
+                        BTree.WriteNewKey(range, valueIndex, synthesizedKey);
 
-                    HashSet<TangleKey> keys;
-                    if (foundExisting) {
-                        BTree.ReadData(pEntry, synthesizedKey.OriginalTypeId, DeserializeKeys, out keys);
-                    } else {
-                        BTree.WriteNewKey(pEntry, synthesizedKey);
-                        keys = new HashSet<TangleKey>();
+                    minimumSize = BTree.GetValueDataTotalBytes(
+                        range, valueIndex, 
+                        foundExisting ? synthesizedKey.OriginalTypeId : (ushort)0
+                    );
+                }
+
+                if (foundExisting)
+                    BTree.UnlockNode(range);
+                else
+                    BTree.FinalizeInsert(range);
+
+                if (add) {
+                    // Ensure we will have enough room to insert this key, if necessary
+                    if (minimumSize == 0)
+                        minimumSize = 4;
+
+                    minimumSize += 4 + key.Data.Count;
+                }
+
+                BTreeValue * pValue;
+                ushort lockedKeyType;
+
+                fixed (byte * pKeyBytes = &key.Data.Array[key.Data.Offset])
+                using (var indexRange = BTree.LockValue(nodeIndex, valueIndex, minimumSize, out pValue, out lockedKeyType))
+                using (var dataRange = BTree.DataStream.AccessRange(pValue->DataOffset, (uint)minimumSize)) {
+                    if ((pValue->DataLength < 4)) {
+                        pValue->ExtraDataBytes -= (4 - pValue->DataLength);
+                        pValue->DataLength = 4;
+                        *(int *)dataRange.Pointer = 0;
                     }
 
-                    if (add)
-                        keys.Add(key);
-                    else
-                        keys.Remove(key);
+                    int numKeys = *(int *)dataRange.Pointer;
+                    uint offset = 4;
 
-                    ArraySegment<byte> data = BTree.Serialize(
-                        pEntry, SerializeKeys, synthesizedKey.OriginalTypeId, ref keys
-                    );
+                    uint? keyPosition = null, totalKeySize = null;
+                    for (int i = 0; i < numKeys; i++) {                       
+                        int keyLength = *(int *)(dataRange.Pointer + offset);
+                        offset += 4;
+                        ushort comparisonKeyType = *(ushort *)(dataRange.Pointer + offset);
+                        offset += 2;
 
-                    BTree.WriteData(pEntry, data);
+                        if ((comparisonKeyType == key.OriginalTypeId) && (Native.memcmp(
+                            dataRange.Pointer + offset, pKeyBytes, 
+                            new UIntPtr((uint)Math.Min(key.Data.Count, keyLength))
+                        ) == 0)) {
+                            keyPosition = offset - 6;
+                            totalKeySize = (uint)(6 + keyLength);
+                            break;
+                        }
 
-                    BTree.UnlockValue(pEntry, synthesizedKey.OriginalTypeId);
+                        offset += (uint)keyLength;
+                    }
 
-                    if (foundExisting)
-                        BTree.UnlockNode(range);
-                    else
-                        BTree.FinalizeInsert(range);
+                    if (add) {
+                        if (!keyPosition.HasValue) {
+                            // Add the key at the end of the list
+                            var insertPosition = pValue->DataLength;
+                            if ((pValue->DataLength + pValue->ExtraDataBytes) < (insertPosition + 6 + key.Data.Count))
+                                throw new InvalidDataException();
+
+                            *(int *)(dataRange.Pointer + insertPosition) = key.Data.Count;
+                            *(ushort *)(dataRange.Pointer + insertPosition + 4) = key.OriginalTypeId;
+                            Native.memmove(
+                                dataRange.Pointer + insertPosition + 6,
+                                pKeyBytes, new UIntPtr((uint)key.Data.Count)
+                            );
+
+                            pValue->DataLength += (uint)(6 + key.Data.Count);
+                            pValue->ExtraDataBytes -= (uint)(6 + key.Data.Count);
+
+                            *(int *)dataRange.Pointer += 1;
+                        }
+                    } else if (keyPosition.HasValue) {
+                        // Remove the key by moving the items after it back in the list
+
+                        var moveSize = dataRange.Size - (keyPosition.Value + totalKeySize);                        
+                        if (moveSize > 0)
+                            Native.memmove(
+                                dataRange.Pointer + keyPosition.Value,
+                                dataRange.Pointer + keyPosition.Value + totalKeySize.Value,
+                                new UIntPtr((uint)moveSize)
+                            );
+
+                        pValue->DataLength -= (uint)(6 + key.Data.Count);
+                        pValue->ExtraDataBytes += (uint)(6 + key.Data.Count);
+
+                        *(int *)dataRange.Pointer -= 1;
+                    }
+
+                    BTree.UnlockValue(pValue, synthesizedKey.OriginalTypeId);
+                    BTree.UnlockNode(indexRange);
                 }
             }
 
@@ -203,19 +271,6 @@ namespace Squared.Data.Mangler {
 
         internal override void OnValueAdded (TangleKey key, ref TValue newValue) {
             UpdateIndexForEntry(key, ref newValue, true);
-        }
-
-        private unsafe static void SerializeKeys (ref SerializationContext context, ref HashSet<TangleKey> input) {
-            var countBytes = ImmutableBufferPool.GetBytes(input.Count);
-            context.Stream.Write(countBytes.Array, countBytes.Offset, countBytes.Count);
-
-            foreach (var key in input) {
-                countBytes = ImmutableBufferPool.GetBytes(key.Data.Count);
-                context.Stream.Write(countBytes.Array, countBytes.Offset, countBytes.Count);
-                var typeBytes = ImmutableBufferPool.GetBytes(key.OriginalTypeId);
-                context.Stream.Write(typeBytes.Array, typeBytes.Offset, typeBytes.Count);
-                context.Stream.Write(key.Data.Array, key.Data.Offset, key.Data.Count);
-            }
         }
 
         private unsafe static void DeserializeKeys (ref DeserializationContext context, out HashSet<TangleKey> output) {

@@ -70,6 +70,23 @@ namespace Squared.Data.Mangler {
     /// </summary>
     /// <typeparam name="T">The type of the value stored within the tangle.</typeparam>
     public unsafe partial class Tangle<T> : ITangle {
+        public struct LockedData : IDisposable {
+            public readonly byte * Pointer;
+            public readonly uint Size;
+
+            private readonly ManualResetEventSlim DisposedSignal;
+
+            internal LockedData (byte * pointer, uint size, ManualResetEventSlim disposedSignal) {
+                Pointer = pointer;
+                Size = size;
+                DisposedSignal = disposedSignal;
+            }
+
+            public void Dispose () {
+                DisposedSignal.Set();
+            }
+        }
+
         public struct FindResult {
             public readonly Tangle<T> Tangle;
             public readonly TangleKey Key;
@@ -89,6 +106,10 @@ namespace Squared.Data.Mangler {
 
             public IFuture SetValue (T newValue) {
                 return Tangle.SetValueByIndex(NodeIndex, ValueIndex, ref newValue);
+            }
+
+            public Future<LockedData> LockData (long? minimumSize = null) {
+                return Tangle.QueueWorkItem(new LockDataThunk(NodeIndex, ValueIndex, minimumSize));
             }
         }
 

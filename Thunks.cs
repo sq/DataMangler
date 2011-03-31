@@ -35,6 +35,10 @@ namespace Squared.Data.Mangler {
 
             protected abstract void OnExecute (Tangle<T> tangle, out U result);
 
+            protected void CompleteEarly (ref U result) {
+                Future.Complete(result);
+            }
+
             protected void Fail (Exception ex) {
                 Failure = ex;
             }
@@ -195,6 +199,51 @@ namespace Squared.Data.Mangler {
             }
         }
 
+        private class LockDataThunk : ThunkBase<LockedData> {
+            public readonly long NodeIndex;
+            public readonly uint ValueIndex;
+            public readonly long? MinimumSize;
+            public readonly ManualResetEventSlim DisposedSignal;
+
+            public LockDataThunk (long nodeIndex, uint valueIndex, long? minimumSize) {
+                NodeIndex = nodeIndex;
+                ValueIndex = valueIndex;
+                MinimumSize = minimumSize;
+                DisposedSignal = new ManualResetEventSlim();
+            }
+
+            protected override unsafe void OnExecute (Tangle<T> tangle, out LockedData result) {
+                BTreeValue * pValue;
+                ushort keyType;
+
+                using (var nodeRange = tangle.BTree.LockValue(NodeIndex, ValueIndex, MinimumSize, out pValue, out keyType))
+                using (var dataRange = tangle.BTree.DataStream.AccessRange(pValue->DataOffset, pValue->DataLength + pValue->ExtraDataBytes)) {
+                    result = new LockedData(
+                        dataRange.Pointer, pValue->DataLength + pValue->ExtraDataBytes, DisposedSignal
+                    );
+
+                    // Complete our future early so that the locked region can be consumed
+                    //  while we wait on the disposal signal
+                    CompleteEarly(ref result);
+
+                    DisposedSignal.Wait();
+
+                    var oldLength = pValue->DataLength;
+                    pValue->DataLength = (uint)MinimumSize.GetValueOrDefault(pValue->DataLength);
+                    if (pValue->DataLength > oldLength)
+                        pValue->ExtraDataBytes -= (pValue->DataLength - oldLength);
+
+                    tangle.BTree.UnlockValue(pValue, keyType);
+                    tangle.BTree.UnlockNode(nodeRange);
+                }
+            }
+
+            public override void Dispose () {
+                DisposedSignal.Dispose();
+                base.Dispose();
+            }
+        }
+
         private class GetMultipleThunk<TKey> : ThunkBase<KeyValuePair<TKey, T>[]> {
             public readonly IEnumerable<TKey> Keys;
             public readonly TangleKeyConverter<TKey> KeyConverter;
@@ -250,6 +299,12 @@ namespace Squared.Data.Mangler {
                 ReadyForJoinSignal.Set();
                 JoinCompleteSignal.Wait();
                 result = default(NoneType);
+            }
+
+            public override void Dispose () {
+                ReadyForJoinSignal.Dispose();
+                JoinCompleteSignal.Dispose();
+                base.Dispose();
             }
         }
 

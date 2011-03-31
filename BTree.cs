@@ -115,9 +115,20 @@ namespace Squared.Data.Mangler.Internal {
             }
         }
 
-        public BTreeValue* LockValue (StreamRange nodeRange, long valueIndex, out ushort keyType) {
+        public uint GetValueDataTotalBytes (StreamRange nodeRange, long valueIndex, ushort keyType) {
             unchecked {
                 var pEntry = (BTreeValue*)(nodeRange.Pointer + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));
+
+                if (pEntry->KeyType != keyType)
+                    throw new InvalidDataException();
+
+                return pEntry->DataLength + pEntry->ExtraDataBytes;
+            }
+        }
+
+        public BTreeValue * LockValue (StreamRange nodeRange, long valueIndex, out ushort keyType) {
+            unchecked {
+                var pEntry = (BTreeValue *)(nodeRange.Pointer + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));
 
                 if (pEntry->KeyType == 0)
                     throw new InvalidDataException();
@@ -127,6 +138,39 @@ namespace Squared.Data.Mangler.Internal {
 
                 return pEntry;
             }
+        }
+
+        public StreamRange LockValue (long nodeIndex, uint valueIndex, long? minimumSize, out BTreeValue * pValue, out ushort keyType) {
+            var result = AccessNode(nodeIndex, true);
+
+            unchecked {
+                pValue = (BTreeValue*)(result.Pointer + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));
+
+                keyType = pValue->KeyType;
+                pValue->KeyType = 0;
+            }
+
+            var lockLength = pValue->DataLength;
+            if ((minimumSize.HasValue) && (minimumSize.Value > lockLength)) {
+                lockLength = (uint)minimumSize.Value;
+
+                var oldPosition = pValue->DataOffset;
+                var oldLength = pValue->DataLength + pValue->ExtraDataBytes;
+
+                using (var oldDataRange = DataStream.AccessRange(oldPosition, oldLength)) {
+                    pValue->DataOffset = (uint)AllocateDataSpace(ref lockLength).Value;
+                    pValue->ExtraDataBytes = (uint)(lockLength - oldLength);
+
+                    FreelistPut(oldPosition, oldLength);
+
+                    using (var dataRange = DataStream.AccessRange(pValue->DataOffset, pValue->DataLength)) {
+                        Native.memmove(dataRange.Pointer, oldDataRange.Pointer, new UIntPtr(oldLength));
+                        Native.memset(oldDataRange.Pointer, 0, new UIntPtr(oldLength));
+                    }
+                }
+            }
+
+            return result;
         }
 
         public void UnlockValue (BTreeValue * pEntry, ushort keyType) {
@@ -485,6 +529,11 @@ namespace Squared.Data.Mangler.Internal {
                 using (var keyRange = KeyStream.AccessRange(btreeValue.KeyOffset, btreeValue.KeyLength, MemoryMappedFileAccess.Write))
                     Unsafe.WriteBytes(keyRange.Pointer, 0, key.Data);
             }
+        }
+
+        public void WriteNewKey (StreamRange nodeRange, uint valueIndex, TangleKey key) {
+            long position = BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size);
+            WriteNewKey((BTreeValue *)(nodeRange.Pointer + position), key);
         }
 
         public void WriteNewKey (BTreeValue * pEntry, TangleKey key) {

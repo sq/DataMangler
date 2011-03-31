@@ -120,8 +120,10 @@ namespace Squared.Data.Mangler {
     public delegate TOut JoinValueSelector<TLeftKey, TLeft, TRightKey, TRight, out TOut> 
         (TLeftKey leftKey, ref TLeft leftValue, TRightKey rightKey, ref TRight rightValue);
 
-    public delegate TIndexKey IndexFunc<TIndexKey, TValue> (TValue value);
+    public delegate TIndexKey IndexFunc<TIndexKey, TValue> (ref TValue value);
 
+    // Making the argument not ref eliminates ambiguity between IndexFunc/IndexMultipleFunc, and
+    //  it's helpful anyway since generator functions can't have ref parameters
     public delegate IEnumerable<TIndexKey> IndexMultipleFunc<TIndexKey, TValue> (TValue value);
 
     public delegate TangleKey TangleKeyConverter<TValue> (TValue value);
