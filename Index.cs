@@ -181,7 +181,7 @@ namespace Squared.Data.Mangler {
                     if (minimumSize == 0)
                         minimumSize = 4;
 
-                    minimumSize += 4 + key.Data.Count;
+                    minimumSize += 6 + key.Data.Count;
                 }
 
                 BTreeValue * pValue;

@@ -157,17 +157,16 @@ namespace Squared.Data.Mangler.Internal {
                 var oldPosition = pValue->DataOffset;
                 var oldLength = pValue->DataLength + pValue->ExtraDataBytes;
 
-                using (var oldDataRange = DataStream.AccessRange(oldPosition, oldLength)) {
-                    pValue->DataOffset = (uint)AllocateDataSpace(ref lockLength).Value;
-                    pValue->ExtraDataBytes = (uint)(lockLength - oldLength);
+                pValue->DataOffset = (uint)AllocateDataSpace(ref lockLength).Value;
+                pValue->ExtraDataBytes = (uint)(lockLength - oldLength);
 
-                    FreelistPut(oldPosition, oldLength);
-
-                    using (var dataRange = DataStream.AccessRange(pValue->DataOffset, pValue->DataLength)) {
-                        Native.memmove(dataRange.Pointer, oldDataRange.Pointer, new UIntPtr(oldLength));
-                        Native.memset(oldDataRange.Pointer, 0, new UIntPtr(oldLength));
-                    }
+                using (var oldDataRange = DataStream.AccessRange(oldPosition, oldLength))
+                using (var dataRange = DataStream.AccessRange(pValue->DataOffset, pValue->DataLength)) {
+                    Native.memmove(dataRange.Pointer, oldDataRange.Pointer, new UIntPtr(pValue->DataLength));
+                    Native.memset(oldDataRange.Pointer, 0, new UIntPtr(pValue->DataLength));
                 }
+
+                FreelistPut(oldPosition, oldLength);
             }
 
             return result;
