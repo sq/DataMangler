@@ -343,15 +343,9 @@ namespace Squared.Data.Mangler.Tests {
             Assert.AreEqual(keys.Count, results.Count());
 
             Assert.AreEqual(
-                keys.OrderBy((k) => k)
-                    .ToArray(), 
-                results.OrderBy((kvp) => kvp.Key)
-                    .Select((kvp) => kvp.Key)
-                    .ToArray()
+                keys.OrderBy((k) => k).ToArray(), 
+                results.ToArray()
             );
-
-            foreach (var kvp in results)
-                Assert.AreEqual((int)kvp.Key, kvp.Value);
         }
 
         [Test]
@@ -359,10 +353,8 @@ namespace Squared.Data.Mangler.Tests {
             var fMultiGet = Tangle.Select(new[] { 1, 2 });
             var results = Scheduler.WaitFor(fMultiGet);
 
-            Assert.AreEqual(1, results[0].Key);
-            Assert.AreEqual(2, results[1].Key);
-            Assert.AreEqual(default(int), results[0].Value);
-            Assert.AreEqual(default(int), results[1].Value);
+            Assert.AreEqual(default(int), results[0]);
+            Assert.AreEqual(default(int), results[1]);
         }
 
         [Test]

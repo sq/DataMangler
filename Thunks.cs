@@ -244,7 +244,7 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        private class GetMultipleThunk<TKey> : ThunkBase<KeyValuePair<TKey, T>[]> {
+        private class GetMultipleThunk<TKey> : ThunkBase<T[]> {
             public readonly IEnumerable<TKey> Keys;
             public readonly TangleKeyConverter<TKey> KeyConverter;
 
@@ -265,7 +265,7 @@ namespace Squared.Data.Mangler {
                     return null;
             }
 
-            protected override void OnExecute (Tangle<T> tangle, out KeyValuePair<TKey, T>[] result) {
+            protected override void OnExecute (Tangle<T> tangle, out T[] result) {
                 var keys = Keys;
 
                 var count = GetCountFast(Keys);
@@ -275,15 +275,15 @@ namespace Squared.Data.Mangler {
                     count = array.Length;
                 }
 
-                var results = new KeyValuePair<TKey, T>[count.Value];
+                var results = new T[count.Value];
 
                 Parallel.ForEach(
                     keys, (rawKey, loopState, i) => {
                         T value;
                         if (tangle.InternalGet(KeyConverter(rawKey), out value))
-                            results[i] = new KeyValuePair<TKey, T>(rawKey, value);
+                            results[i] = value;
                         else
-                            results[i] = new KeyValuePair<TKey, T>(rawKey, default(T));
+                            results[i] = default(T);
                     }
                 );
 

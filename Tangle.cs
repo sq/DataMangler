@@ -196,7 +196,7 @@ namespace Squared.Data.Mangler {
         /// </summary>
         /// <param name="keys">The keys to look up in this tangle.</param>
         /// <returns>A future that will contain the retrieved values.</returns>
-        public Future<KeyValuePair<TKey, T>[]> Select<TKey> (IEnumerable<TKey> keys) {
+        public Future<T[]> Select<TKey> (IEnumerable<TKey> keys) {
             return QueueWorkItem(new GetMultipleThunk<TKey>(keys));
         }
 
