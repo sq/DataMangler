@@ -755,6 +755,7 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         public void Dispose () {
+            FreelistStream.Dispose();
             IndexStream.Dispose();
             KeyStream.Dispose();
             DataStream.Dispose();
