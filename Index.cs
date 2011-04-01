@@ -133,6 +133,14 @@ namespace Squared.Data.Mangler {
             return Tangle.QueueWorkItem(new GetThunk(this, key));
         }
 
+        /// <summary>
+        /// Reads every key from the index, in no particular order.
+        /// </summary>
+        /// <returns>A future that will contain the retrieved keys.</returns>
+        public Future<TangleKey[]> GetAllKeys () {
+            return Tangle.QueueWorkItem(new GetAllKeysThunk(this));
+        }
+
         internal unsafe void UpdateIndexForEntry (TangleKey key, ref TValue value, bool add) {
             long nodeIndex;
             uint valueIndex;

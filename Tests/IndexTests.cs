@@ -126,5 +126,29 @@ namespace Squared.Data.Mangler.Tests {
             Assert.AreEqual(new [] { key1, key2 }, Scheduler.WaitFor(ByWords.Find("World")));
             Assert.AreEqual(new [] { key2 }, Scheduler.WaitFor(ByWords.Find("Greetings")));
         }
+
+        [Test]
+        public void TestGetAllKeys () {
+            var ByWords = Scheduler.WaitFor(Tangle.CreateIndex<string>(
+                "ByWords",
+                (string v) => v.Split(' ')
+            ));
+
+            var key1 = new TangleKey("a");
+            var key2 = new TangleKey("b");
+            var value1 = "Hello World";
+            var value2 = "Greetings World";
+
+            Scheduler.WaitFor(Tangle.Set(key1, value1));
+            Scheduler.WaitFor(Tangle.Set(key2, value2));
+
+            Assert.AreEqual(
+                new[] { "Greetings", "Hello", "World" }, 
+                Scheduler.WaitFor(ByWords.GetAllKeys())
+                    .Select((k) => k.Value as string)
+                    .OrderBy((k) => k)
+                    .ToArray()
+            );
+        }
     }
 }

@@ -392,7 +392,7 @@ namespace Squared.Data.Mangler {
                 result = new T[count];
 
                 for (int node = 0; node < nodeCount; node++)
-                    position += tangle.InternalGetNodeValues(node, result, position);
+                    position += tangle.BTree.GetNodeValues(node, tangle.Deserializer, result, position);
 
                 if (position != count)
                     throw new InvalidDataException();
@@ -408,7 +408,7 @@ namespace Squared.Data.Mangler {
                 result = new TangleKey[count];
 
                 for (int node = 0; node < nodeCount; node++)
-                    position += tangle.InternalGetNodeKeys(node, result, position);
+                    position += tangle.BTree.GetNodeKeys(node, result, position);
 
                 if (position != count)
                     throw new InvalidDataException();
@@ -632,6 +632,26 @@ namespace Squared.Data.Mangler {
                 } else {
                     Fail(new KeyNotFoundException(Key));
                 }
+            }
+        }
+
+        private class GetAllKeysThunk : ThunkBase<TangleKey[]> {
+            public GetAllKeysThunk (Index<TIndexKey, TValue> tangle)
+                : base (tangle) {
+            }
+
+            protected override void OnExecute (Tangle<TValue> tangle, out TangleKey[] result) {
+                var nodeCount = Index.BTree.NodeCount;
+                var count = Index.BTree.ValueCount;
+                int position = 0;
+
+                result = new TangleKey[count];
+
+                for (int node = 0; node < nodeCount; node++)
+                    position += Index.BTree.GetNodeKeys(node, result, position);
+
+                if (position != count)
+                    throw new InvalidDataException();
             }
         }
     }

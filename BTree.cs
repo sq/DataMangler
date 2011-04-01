@@ -126,6 +126,36 @@ namespace Squared.Data.Mangler.Internal {
             }
         }
 
+        public int GetNodeKeys (long nodeIndex, TangleKey[] output, int outputOffset) {
+            using (var range = AccessNode(nodeIndex, false)) {
+                var pNode = (BTreeNode*)range.Pointer;
+
+                var numValues = pNode->NumValues;
+                for (int i = 0; i < numValues; i++) {
+                    var pEntry = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues + (i * BTreeValue.Size));
+
+                    ReadKey(pEntry, out output[i + outputOffset]);
+                }
+
+                return numValues;
+            }
+        }
+
+        public int GetNodeValues<T> (long nodeIndex, Deserializer<T> deserializer, T[] output, int outputOffset) {
+            using (var range = AccessNode(nodeIndex, false)) {
+                var pNode = (BTreeNode*)range.Pointer;
+
+                var numValues = pNode->NumValues;
+                for (int i = 0; i < numValues; i++) {
+                    var pEntry = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues + (i * BTreeValue.Size));
+
+                    ReadData(pEntry, deserializer, out output[i + outputOffset]);
+                }
+
+                return numValues;
+            }
+        }
+
         public BTreeValue * LockValue (StreamRange nodeRange, long valueIndex, out ushort keyType) {
             unchecked {
                 var pEntry = (BTreeValue *)(nodeRange.Pointer + BTreeNode.OffsetOfValues + (valueIndex * BTreeValue.Size));

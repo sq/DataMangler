@@ -528,36 +528,6 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        internal int InternalGetNodeValues (long nodeIndex, T[] output, int outputOffset) {
-            using (var range = BTree.AccessNode(nodeIndex, false)) {
-                var pNode = (BTreeNode *)range.Pointer;
-
-                var numValues = pNode->NumValues;
-                for (int i = 0; i < numValues; i++) {
-                    var pEntry = (BTreeValue *)(range.Pointer + BTreeNode.OffsetOfValues + (i * BTreeValue.Size));
-
-                    BTree.ReadData(pEntry, Deserializer, out output[i + outputOffset]);
-                }
-
-                return numValues;
-            }
-        }
-
-        internal int InternalGetNodeKeys (long nodeIndex, TangleKey[] output, int outputOffset) {
-            using (var range = BTree.AccessNode(nodeIndex, false)) {
-                var pNode = (BTreeNode*)range.Pointer;
-
-                var numValues = pNode->NumValues;
-                for (int i = 0; i < numValues; i++) {
-                    var pEntry = (BTreeValue*)(range.Pointer + BTreeNode.OffsetOfValues + (i * BTreeValue.Size));
-
-                    BTree.ReadKey(pEntry, out output[i + outputOffset]);
-                }
-
-                return numValues;
-            }
-        }
-
         private void InternalGetFoundValue (long nodeIndex, uint valueIndex, out T result) {
             using (var range = BTree.AccessValue(nodeIndex, valueIndex)) {
                 var pEntry = (BTreeValue *)range.Pointer;
