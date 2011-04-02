@@ -76,8 +76,10 @@ namespace Squared.Data.Mangler.Internal {
             Buffer = view.GetSafeBuffer();
             Pointer = null;
             Buffer.AcquirePointer(ref Pointer);
-            Pointer += view.GetPointerOffset();
-            Pointer += (offset - actualOffset);
+            unchecked {
+                Pointer += view.GetPointerOffset();
+                Pointer += (offset - actualOffset);
+            }
         }
 
         public StreamRange (StreamRef stream, ViewCache.CacheEntry cacheEntry, long offset, uint size) {
@@ -87,8 +89,10 @@ namespace Squared.Data.Mangler.Internal {
             Offset = offset;
             Size = size;
             Buffer = cacheEntry.Buffer;
-            Pointer = cacheEntry.Pointer + cacheEntry.PointerOffset;
-            Pointer += (offset - cacheEntry.Offset);
+            unchecked {
+                Pointer = cacheEntry.Pointer + cacheEntry.PointerOffset;
+                Pointer += (offset - cacheEntry.Offset);
+            }
         }
 
         public void Dispose () {

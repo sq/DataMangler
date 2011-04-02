@@ -74,6 +74,7 @@ namespace Squared.Data.Mangler.Internal {
                 var range = IndexStream.AccessRange(position, BTreeNode.TotalSize, MemoryMappedFileAccess.ReadWrite);
 
                 var pNode = (BTreeNode*)range.Pointer;
+
                 if (pNode->IsValid != 1) {
                     // If the node is fully uninitialized, locking it for write is okay
                     if ((pNode->NumValues != 0) || (pNode->HasLeaves != 0))
@@ -89,6 +90,7 @@ namespace Squared.Data.Mangler.Internal {
 
         public void UnlockNode (StreamRange range) {
             var pNode = (BTreeNode*)range.Pointer;
+
             if (pNode->IsValid != 0)
                 throw new InvalidDataException();
 
@@ -284,14 +286,13 @@ namespace Squared.Data.Mangler.Internal {
         public bool FindKey (TangleKey key, bool forInsertion, out long nodeIndex, out uint valueIndex) {
             uint keyLength = (uint)key.Data.Count;
 
-            long nodeCount = NodeCount;
             long rootIndex = RootIndex;
             long parentNodeIndex = rootIndex;
             long currentNode = parentNodeIndex;
             uint parentValueIndex = 0;
 
+            while (true)
             fixed (byte* pKey = &key.Data.Array[key.Data.Offset])
-            while (currentNode >= 0 && currentNode < nodeCount)
             using (var range = AccessNode(currentNode, false)) {
                 var pNode = (BTreeNode*)range.Pointer;
 
@@ -319,7 +320,6 @@ namespace Squared.Data.Mangler.Internal {
                         SplitLeafNode(newRootIndex, 0, currentNode);
 
                         // Restart at the root
-                        nodeCount += 2;
                         currentNode = parentNodeIndex = rootIndex = newRootIndex;
                         parentValueIndex = 0;
                         continue;
@@ -328,7 +328,6 @@ namespace Squared.Data.Mangler.Internal {
                         SplitLeafNode(parentNodeIndex, parentValueIndex, currentNode);
 
                         // Restart at the root
-                        nodeCount += 1;
                         currentNode = parentNodeIndex = rootIndex;
                         parentValueIndex = 0;
                         continue;
@@ -356,8 +355,6 @@ namespace Squared.Data.Mangler.Internal {
                     return false;
                 }
             }
-
-            throw new InvalidDataException("Current node left the index");
         }
 
         /// <summary>

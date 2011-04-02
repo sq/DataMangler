@@ -278,7 +278,10 @@ namespace Squared.Data.Mangler {
             }
         }
 
-        public const int MaxSizeBytes = 256 * 1024;
+        // The large object heap threshold is roughly 85KB so we set our block size to 64KB
+        //  this ensures that our blocks start in gen0 and can get collected early, instead
+        //  of spending their entire life on the large object heap
+        public const int MaxSizeBytes = 64 * 1024;
 
         public static readonly int Capacity;
 
