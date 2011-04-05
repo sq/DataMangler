@@ -364,8 +364,10 @@ namespace Squared.Data.Mangler {
                     item.Execute(this);
                 }
 
-                if (!newWorkItemEvent.Wait(WorkerThreadTimeoutMs))
+                if (!newWorkItemEvent.Wait(WorkerThreadTimeoutMs)) {
+                    BTree.FlushCache();
                     return;
+                }
 
                 newWorkItemEvent.Reset();
             }

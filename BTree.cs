@@ -781,6 +781,13 @@ namespace Squared.Data.Mangler.Internal {
             }
         }
 
+        public void FlushCache () {
+            FreelistStream.FlushCache();
+            IndexStream.FlushCache();
+            KeyStream.FlushCache();
+            DataStream.FlushCache();
+        }
+
         public void Dispose () {
             FreelistStream.Dispose();
             IndexStream.Dispose();

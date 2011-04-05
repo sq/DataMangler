@@ -681,6 +681,7 @@ namespace Squared.Data.Mangler.Tests {
                 );
             }
 
+            // This will fail if the freelist is not being used
             Assert.Less(Tangle.WastedDataBytes, wasted3);
         }
 

@@ -226,12 +226,14 @@ namespace Squared.Data.Mangler.Internal {
         public readonly long FileLength;
         public readonly int Capacity;
         private readonly CacheEntry[] Cache;
+        private bool _IsDisposed;
 
         public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 4) {
             File = file;
             FileLength = fileLength;
             Capacity = capacity;
             Cache = new CacheEntry[capacity];
+            _IsDisposed = false;
         }
 
         public MemoryMappedViewAccessor CreateViewUncached (long offset, uint size, MemoryMappedFileAccess access, out long actualOffset, out uint actualSize) {
@@ -255,6 +257,9 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         public CacheEntry CreateView (long offset, uint size, MemoryMappedFileAccess access) {
+            if (_IsDisposed)
+                throw new ObjectDisposedException("Cache");
+
             if (access == MemoryMappedFileAccess.Write)
                 access = MemoryMappedFileAccess.ReadWrite;
 
@@ -301,12 +306,26 @@ namespace Squared.Data.Mangler.Internal {
             return newEntry;
         }
 
-        public void Dispose () {
+        public void Flush () {
+            if (_IsDisposed)
+                return;
+
             for (int i = 0; i < Capacity; i++) {
                 var ce = Interlocked.Exchange(ref Cache[i], null);
 
                 if (ce != null)
                     ce.Release();
+            }
+        }
+
+        public void Dispose () {
+            Flush();
+            _IsDisposed = true;
+        }
+
+        public bool IsDisposed {
+            get {
+                return _IsDisposed;
             }
         }
     }
@@ -479,6 +498,11 @@ namespace Squared.Data.Mangler.Internal {
                     this, view, relativeOffset, size, actualOffset, actualSize
                 );
             }
+        }
+
+        public void FlushCache () {
+            if (Cache != null)
+                Cache.Flush();
         }
 
         private void DisposeViews () {
