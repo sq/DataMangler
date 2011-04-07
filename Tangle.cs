@@ -18,16 +18,10 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 
 using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Linq;
-using System.Threading.Tasks;
 using Squared.Data.Mangler.Serialization;
 using Squared.Task;
-using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using Squared.Data.Mangler.Internal;
-using System.IO.MemoryMappedFiles;
 using System.Collections.Concurrent;
 using TaskScheduler = Squared.Task.TaskScheduler;
 
