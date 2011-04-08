@@ -44,6 +44,7 @@
     <Compile Include="Helpers.cs" />
     <Compile Include="Index.cs" />
     <Compile Include="Interfaces.cs" />
+    <Compile Include="PropertySerializer.cs" />
     <Compile Include="Serialization.cs" />
     <Compile Include="StreamCollection.cs" />
     <Compile Include="TangleKey.cs" />

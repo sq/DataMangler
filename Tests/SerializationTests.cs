@@ -83,4 +83,51 @@ namespace Squared.Data.Mangler.Tests {
             Assert.IsTrue(key.Equals(result.Key));
         }
     }
+
+    [TestFixture]
+    public class PropertySerializerTests : BasicTestFixture {
+        public class ClassWithProperties {
+            public int A;
+            public int B {
+                get;
+                set;
+            }
+            public string C;
+        }
+
+        public Tangle<object> Tangle;
+        public TanglePropertySerializer Serializer;
+
+        [SetUp]
+        public override void SetUp () {
+            base.SetUp();
+            Tangle = new Tangle<object>(Scheduler, Storage);
+            Serializer = new TanglePropertySerializer(Tangle);
+        }
+
+        [TearDown]
+        public override void TearDown () {
+            Tangle.Dispose();
+            base.TearDown();
+        }
+
+        [Test]
+        public void TestSerializesProperties () {
+            var instance = new ClassWithProperties {
+                A = 1,
+                B = 2,
+                C = "foo"
+            };
+
+            Serializer.Bind(() => instance.A);
+            Serializer.Bind(() => instance.B);
+            Serializer.Bind(() => instance.C);
+
+            Scheduler.WaitFor(Serializer.Save());
+
+            Assert.AreEqual(1, (int)Scheduler.WaitFor(Tangle.Get("A")));
+            Assert.AreEqual(2, (int)Scheduler.WaitFor(Tangle.Get("B")));
+            Assert.AreEqual("foo", (string)Scheduler.WaitFor(Tangle.Get("C")));
+        }
+    }
 }
