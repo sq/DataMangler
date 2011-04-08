@@ -107,6 +107,30 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [Test]
+        public void FetchKeysForMultipleValues () {
+            var ByValue = Scheduler.WaitFor(Tangle.CreateIndex("ByValue", (ref string v) => v));
+
+            var key1 = new TangleKey("hello");
+            var key2 = new TangleKey("greetings");
+            var key3 = new TangleKey("hi");
+            var value1 = "world";
+            var value2 = "cat";
+
+            Scheduler.WaitFor(Tangle.Set(key1, value1));
+            Scheduler.WaitFor(Tangle.Set(key2, value1));
+            Scheduler.WaitFor(Tangle.Set(key3, value2));
+
+            Assert.AreEqual(
+                new TangleKey[] { key1, key2, key3 },
+                Scheduler.WaitFor(ByValue.Find(new[] { value1, value2 }))
+            );
+            Assert.AreEqual(
+                new string[] { value1, value1, value2 },
+                Scheduler.WaitFor(ByValue.Get(new [] { value1, value2 }))
+            );
+        }
+
+        [Test]
         public void CanUseEnumeratorAsIndexFunction () {
             // Bleh, unless we explicitly specify the type argument to CreateIndex,
             //  it assumes a type of <string[]> instead of picking the IEnumerable overload.
@@ -125,6 +149,27 @@ namespace Squared.Data.Mangler.Tests {
 
             Assert.AreEqual(new [] { key1, key2 }, Scheduler.WaitFor(ByWords.Find("World")));
             Assert.AreEqual(new [] { key2 }, Scheduler.WaitFor(ByWords.Find("Greetings")));
+        }
+
+        [Test]
+        public void FetchKeysForMultipleValuesWithEnumeratorIndex () {
+            var ByWords = Scheduler.WaitFor(Tangle.CreateIndex<string>(
+                "ByWords",
+                (string v) => v.Split(' ')
+            ));
+
+            var key1 = new TangleKey("a");
+            var key2 = new TangleKey("b");
+            var value1 = "Hello World";
+            var value2 = "Greetings World";
+
+            Scheduler.WaitFor(Tangle.Set(key1, value1));
+            Scheduler.WaitFor(Tangle.Set(key2, value2));
+
+            Assert.AreEqual(
+                new[] { key1, key2 }, 
+                Scheduler.WaitFor(ByWords.Find(new [] { "Hello", "Greetings" }))
+            );
         }
 
         [Test]

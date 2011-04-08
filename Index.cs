@@ -128,9 +128,21 @@ namespace Squared.Data.Mangler {
             return Tangle.QueueWorkItem(new FindThunk(this, key));
         }
 
+        public Future<TangleKey[]> Find (IEnumerable<TIndexKey> values) {
+            return Tangle.QueueWorkItem(new FindMultipleThunk(
+                this, from value in values select KeyConverter(value)
+            ));
+        }
+
         public Future<TValue[]> Get (TIndexKey value) {
             var key = KeyConverter(value);
             return Tangle.QueueWorkItem(new GetThunk(this, key));
+        }
+
+        public Future<TValue[]> Get (IEnumerable<TIndexKey> values) {
+            return Tangle.QueueWorkItem(new GetMultipleThunk(
+                this, from value in values select KeyConverter(value)
+            ));
         }
 
         /// <summary>

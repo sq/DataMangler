@@ -605,6 +605,36 @@ namespace Squared.Data.Mangler {
             }
         }
 
+        private class FindMultipleThunk : ThunkBase<TangleKey[]> {
+            public readonly IEnumerable<TangleKey> Keys;
+
+            public FindMultipleThunk (Index<TIndexKey, TValue> index, IEnumerable<TangleKey> keys)
+                : base(index) {
+                Keys = keys;
+            }
+
+            protected override unsafe void OnExecute (Tangle<TValue> tangle, out TangleKey[] result) {
+                long nodeIndex;
+                uint valueIndex;
+
+                var resultSet = new HashSet<TangleKey>();
+
+                foreach (var key in Keys) {
+                    if (Index.BTree.FindKey(key, false, out nodeIndex, out valueIndex)) {
+                        HashSet<TangleKey> keys;
+                        using (var range = Index.BTree.AccessValue(nodeIndex, valueIndex))
+                            Index.BTree.ReadData((BTreeValue*)range.Pointer, Index<TIndexKey, TValue>.DeserializeKeys, out keys);
+
+                        resultSet.UnionWith(keys);
+                    }
+                }
+                
+                // Maybe we should throw for missing keys?
+
+                result = resultSet.ToArray();
+            }
+        }
+
         private class GetThunk : ThunkBase<TValue[]> {
             public readonly TangleKey Key;
 
@@ -632,6 +662,41 @@ namespace Squared.Data.Mangler {
                 } else {
                     Fail(new KeyNotFoundException(Key));
                 }
+            }
+        }
+
+        private class GetMultipleThunk : ThunkBase<TValue[]> {
+            public readonly IEnumerable<TangleKey> Keys;
+
+            public GetMultipleThunk (Index<TIndexKey, TValue> index, IEnumerable<TangleKey> keys)
+                : base(index) {
+                Keys = keys;
+            }
+
+            protected override unsafe void OnExecute (Tangle<TValue> tangle, out TValue[] result) {
+                long nodeIndex;
+                uint valueIndex;
+
+                var matchedKeys = new HashSet<TangleKey>();
+
+                foreach (var key in Keys) {
+                    if (Index.BTree.FindKey(key, false, out nodeIndex, out valueIndex)) {
+                        HashSet<TangleKey> keys;
+                        using (var range = Index.BTree.AccessValue(nodeIndex, valueIndex))
+                            Index.BTree.ReadData((BTreeValue*)range.Pointer, Index<TIndexKey, TValue>.DeserializeKeys, out keys);
+
+                        matchedKeys.UnionWith(keys);
+                    }
+                }
+
+                // Maybe we should throw for missing keys or values?
+
+                var resultArray = new TValue[matchedKeys.Count];
+                Parallel.ForEach(matchedKeys, (key, loopState, i) => {
+                    tangle.InternalGet(key, out resultArray[i]);
+                });
+
+                result = resultArray;
             }
         }
 
