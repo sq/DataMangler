@@ -441,6 +441,24 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [Test]
+        public void TestCascadingSelect () {
+            using (var otherTangle1 = new Tangle<int>(Scheduler, new SubStreamSource(Storage, "2_", false)))
+            using (var otherTangle2 = new Tangle<int>(Scheduler, new SubStreamSource(Storage, "3_", false))) {
+                Scheduler.WaitFor(Tangle.Set(1, 1));
+                Scheduler.WaitFor(otherTangle1.Set(2, 3));
+                Scheduler.WaitFor(otherTangle2.Set(2, 5));
+                Scheduler.WaitFor(otherTangle2.Set(3, 4));
+
+                var result = Scheduler.WaitFor(Tangle.CascadingSelect(
+                    new [] { otherTangle1, otherTangle2 },
+                    new [] { 1, 2, 3, 4 }
+                ));
+
+                Assert.AreEqual(new [] { 1, 3, 4, default(int) }, result);
+            }
+        }
+
+        [Test]
         public void TestSelfJoin () {
             Scheduler.WaitFor(Tangle.Set(1, 2));
             Scheduler.WaitFor(Tangle.Set(2, 8));

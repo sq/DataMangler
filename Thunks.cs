@@ -291,6 +291,72 @@ namespace Squared.Data.Mangler {
             }
         }
 
+        private class CascadingGetMultipleThunk<TKey> : ThunkBase<T[]> {
+            public readonly IEnumerable<Tangle<T>> Cascades;
+            public readonly IEnumerable<Tangle<T>.JoinBarrierThunk> Barriers;
+            public readonly IEnumerable<TKey> Keys;
+            public readonly TangleKeyConverter<TKey> KeyConverter;
+
+            public CascadingGetMultipleThunk (IEnumerable<Tangle<T>.JoinBarrierThunk> barriers, IEnumerable<Tangle<T>> cascades, IEnumerable<TKey> keys) {
+                Barriers = barriers;
+                Cascades = cascades;
+                Keys = keys;
+                KeyConverter = TangleKey.GetConverter<TKey>();
+            }
+
+            protected static int? GetCountFast (IEnumerable<TKey> keys) {
+                TKey[] array = keys as TKey[];
+                ICollection<TKey> collection = keys as ICollection<TKey>;
+
+                if (array != null)
+                    return array.Length;
+                else if (collection != null)
+                    return collection.Count;
+                else
+                    return null;
+            }
+
+            protected override void OnExecute (Tangle<T> tangle, out T[] result) {
+                var keys = Keys;
+
+                var count = GetCountFast(Keys);
+                if (!count.HasValue) {
+                    var array = Keys.ToArray();
+                    keys = array;
+                    count = array.Length;
+                }
+
+                var results = new T[count.Value];
+
+                foreach (var barrier in Barriers)
+                    barrier.ReadyForJoinSignal.Wait();
+
+                Parallel.ForEach(
+                    keys, (rawKey, loopState, i) => {
+                        T value;
+                        var key = KeyConverter(rawKey);
+
+                        results[i] = default(T);
+                        if (tangle.InternalGet(key, out value))
+                            results[i] = value;
+                        else {
+                            foreach (var cascade in Cascades) {
+                                if (cascade.InternalGet(key, out value)) {
+                                    results[i] = value;
+                                    break;
+                                }
+                            }
+                        }   
+                    }
+                );
+
+                result = results;
+
+                foreach (var barrier in Barriers)
+                    barrier.JoinCompleteSignal.Set();
+            }
+        }
+
         private class JoinBarrierThunk : ThunkBase<NoneType> {
             public readonly ManualResetEventSlim ReadyForJoinSignal = new ManualResetEventSlim(false);
             public readonly ManualResetEventSlim JoinCompleteSignal = new ManualResetEventSlim(false);
