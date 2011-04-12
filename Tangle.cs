@@ -293,6 +293,14 @@ namespace Squared.Data.Mangler {
         }
 
         /// <summary>
+        /// Erases the contents of the tangle and all attached indexes.
+        /// </summary>
+        /// <returns>A future that completes once the tangle's contents have been erased.</returns>
+        public IFuture Clear () {
+            return QueueWorkItem(new ClearThunk());
+        }
+
+        /// <summary>
         /// Searches the tangle for a given key, and if it is found, returns a reference to the key that can be used to retrieve or replace its associated value.
         /// </summary>
         /// <returns>A future that will contain a reference to the key, if it was found.</returns>

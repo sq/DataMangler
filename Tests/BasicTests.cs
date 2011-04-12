@@ -472,6 +472,35 @@ namespace Squared.Data.Mangler.Tests {
             Assert.AreEqual(4, joinResult[1].Key);
             Assert.AreEqual(16, joinResult[1].Value);
         }
+
+        [Test]
+        public void TestClear () {
+            for (int i = 0; i < 100; i++)
+                Scheduler.WaitFor(Tangle.Set(i, i));
+
+            Scheduler.WaitFor(Tangle.Clear());
+
+            for (int i = 0; i < 100; i++) {
+                try {
+                    Scheduler.WaitFor(Tangle.Find(i));
+                    Assert.Fail("Expected to throw");
+                } catch (FutureException fe) {
+                    Assert.IsInstanceOf<KeyNotFoundException>(fe.InnerException);
+                }
+
+                try {
+                    Scheduler.WaitFor(Tangle.Get(i));
+                    Assert.Fail("Expected to throw");
+                } catch (FutureException fe) {
+                    Assert.IsInstanceOf<KeyNotFoundException>(fe.InnerException);
+                }
+            }
+
+            Scheduler.WaitFor(Tangle.Set(2, 4));
+            Assert.AreEqual(
+                4, Scheduler.WaitFor(Tangle.Get(2))
+            );
+        }
     }
 
     [TestFixture]

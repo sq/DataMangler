@@ -107,6 +107,16 @@ namespace Squared.Data.Mangler {
             }
         }
 
+        private class ClearThunk : ThunkBase<NoneType> {
+            protected override void OnExecute (Tangle<T> tangle, out NoneType result) {
+                tangle.BTree.Clear();
+                foreach (var index in tangle.Indices.Values)
+                    index.Clear();
+
+                result = NoneType.None;
+            }
+        }
+
         internal class BatchThunk : SetThunkBase<int>, IReplaceCallback<T> {
             public Batch<T> Batch;
             private bool ShouldReplace;

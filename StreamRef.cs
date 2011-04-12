@@ -435,6 +435,11 @@ namespace Squared.Data.Mangler.Internal {
                 return Interlocked.Add(ref header.Ptr->DataLength, -size);
         }
 
+        public unsafe void Clear () {
+            using (var header = AccessHeader())
+                header.Ptr->DataLength = 0;
+        }
+
         public unsafe uint FormatVersion {
             get {
                 using (var header = AccessHeader())

@@ -11,6 +11,8 @@ namespace Squared.Data.Mangler {
         internal abstract void OnValueRemoved (TangleKey key, ref TValue oldValue);
         internal abstract void OnValueAdded (TangleKey key, ref TValue newValue);
 
+        internal abstract void Clear ();
+
         public abstract void Dispose ();
     }
 
@@ -291,6 +293,10 @@ namespace Squared.Data.Mangler {
 
         internal override void OnValueAdded (TangleKey key, ref TValue newValue) {
             UpdateIndexForEntry(key, ref newValue, true);
+        }
+
+        internal override void Clear () {
+            BTree.Clear();
         }
 
         private unsafe static void DeserializeKeys (ref DeserializationContext context, out HashSet<TangleKey> output) {

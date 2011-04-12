@@ -518,6 +518,17 @@ namespace Squared.Data.Mangler.Internal {
             CreateRoot();
         }
 
+        public void Clear () {
+            IndexStream.Clear();
+            KeyStream.Clear();
+            DataStream.Clear();
+            FreelistStream.Clear();
+
+            Native.memset(_HeaderRange.Pointer, 0, new UIntPtr(BTreeHeader.Size));
+
+            InitializeBTree();
+        }
+
         public bool ReadKey (BTreeValue* pEntry, out TangleKey key) {
             ushort keyType = pEntry->KeyType;
             return ReadKey(pEntry, keyType, out key);
