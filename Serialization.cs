@@ -269,12 +269,16 @@ namespace Squared.Data.Mangler {
 
     public static class ImmutableArrayPool<T> {
         private class State {
-            public readonly T[] Buffer;
-            public int ElementsUsed;
+            public readonly T[][] Buffers;
+            public int ElementsUsed, BuffersUsed;
 
-            public State (T[] buffer) {
-                Buffer = buffer;
+            public State (int capacity) {
+                Buffers = new T[BufferCount][];
+                for (int i = 0; i < Buffers.Length; i++)
+                    Buffers[i] = new T[capacity];
+
                 ElementsUsed = 0;
+                BuffersUsed = 0;
             }
         }
 
@@ -282,6 +286,7 @@ namespace Squared.Data.Mangler {
         //  this ensures that our blocks start in gen0 and can get collected early, instead
         //  of spending their entire life on the large object heap
         public const int MaxSizeBytes = 64 * 1024;
+        public const int BufferCount = 8;
 
         public static readonly int Capacity;
 
@@ -298,14 +303,25 @@ namespace Squared.Data.Mangler {
 
             var data = ThreadLocal.Value;
 
-            if ((data == null) || (data.ElementsUsed >= Capacity - count)) {
-                data = ThreadLocal.Value = new State(new T[Capacity]);
+            bool usedUpElements = false;
+            bool allocateNew = (data == null) ||
+                ((usedUpElements = (data.ElementsUsed >= Capacity - count)) && 
+                 (data.BuffersUsed >= BufferCount - 1));
+
+            if (allocateNew) {
+                data = ThreadLocal.Value = new State(Capacity);
+                usedUpElements = false;
+            }
+
+            if (usedUpElements) {
+                data.ElementsUsed = 0;
+                data.BuffersUsed += 1;
             }
 
             var offset = data.ElementsUsed;
             data.ElementsUsed += count;
 
-            return new ArraySegment<T>(data.Buffer, offset, count);
+            return new ArraySegment<T>(data.Buffers[data.BuffersUsed], offset, count);
         }
     }
 }
