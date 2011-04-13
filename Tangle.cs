@@ -195,6 +195,30 @@ namespace Squared.Data.Mangler {
         }
 
         /// <summary>
+        /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys.
+        /// If a provided key is not found in this tangle, each of the tangles in the sequence of cascades is tried.
+        /// </summary>
+        /// <param name="keys">The keys to look up in this tangle.</param>
+        /// <param name="cascades">The tangles to search if this tangle does not contain a key.</param>
+        /// <returns>A future that will contain the retrieved values.</returns>
+        public Future<T[]> CascadingSelect<TKey> (IEnumerable<Tangle<T>> cascades, IEnumerable<TKey> keys) {
+            var seen = new HashSet<Tangle<T>>();
+            var barriers = new List<Tangle<T>.JoinBarrierThunk>();
+
+            foreach (var tangle in cascades) {
+                if (Object.Equals(tangle, this) || seen.Contains(tangle))
+                    throw new InvalidOperationException("Cannot cascade a tangle with itself");
+
+                var barrier = new Tangle<T>.JoinBarrierThunk();
+                tangle.QueueWorkItem(barrier);
+                barriers.Add(barrier);
+                seen.Add(tangle);
+            }
+
+            return QueueWorkItem(new CascadingGetMultipleThunk<TKey>(barriers, cascades, keys));
+        }
+
+        /// <summary>
         /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys,
         ///  and then uses those values to perform a lookup within a second tangle.
         /// </summary>
@@ -266,6 +290,14 @@ namespace Squared.Data.Mangler {
 
         protected IFuture SetValueByIndex (long nodeIndex, uint valueIndex, ref T value) {
             return QueueWorkItem(new SetByIndexThunk(nodeIndex, valueIndex, ref value));
+        }
+
+        /// <summary>
+        /// Erases the contents of the tangle and all attached indexes.
+        /// </summary>
+        /// <returns>A future that completes once the tangle's contents have been erased.</returns>
+        public IFuture Clear () {
+            return QueueWorkItem(new ClearThunk());
         }
 
         /// <summary>

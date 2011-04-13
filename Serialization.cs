@@ -20,6 +20,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.IO;
 using System.Threading;
@@ -384,8 +385,8 @@ namespace Squared.Data.Mangler.Serialization {
     }
 
     public static class Defaults<T> {
-        public static Serializer<T> Serializer = SerializeToXml;
-        public static Deserializer<T> Deserializer = DeserializeFromXml;
+        public static Serializer<T> Serializer = SerializeWithBinaryFormatter;
+        public static Deserializer<T> Deserializer = DeserializeWithBinaryFormatter;
 
         unsafe static Defaults () {
             var t = typeof(T);
@@ -406,12 +407,29 @@ namespace Squared.Data.Mangler.Serialization {
             }
         }
 
+        public static void SerializeWithBinaryFormatter (ref SerializationContext context, ref T input) {
+            var formatter = new BinaryFormatter();
+            formatter.Serialize(context.Stream, input);
+        }
+
+        public static void DeserializeWithBinaryFormatter (ref DeserializationContext context, out T output) {
+            var formatter = new BinaryFormatter();
+            output = (T)formatter.Deserialize(context.Stream);
+        }
+
         public static void SerializeToXml (ref SerializationContext context, ref T input) {
-            var ser = new XmlSerializer(typeof(T));
+            var serializeType = typeof(T);
+            if (input != null)
+                serializeType = input.GetType();
+
+            var ser = new XmlSerializer(serializeType);
             ser.Serialize(context.Stream, input);
         }
 
         public static void DeserializeFromXml (ref DeserializationContext context, out T output) {
+            if (typeof(T) == typeof(object))
+                throw new InvalidOperationException("Cannot deserialize XML to type Object. Provide a specific type.");
+
             var ser = new XmlSerializer(typeof(T));
             output = (T)ser.Deserialize(context.Stream);
         }
