@@ -17,6 +17,7 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 */
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -34,6 +35,18 @@ namespace Squared.Data.Mangler {
             protected Exception Failure = null;
 
             protected abstract void OnExecute (Tangle<T> tangle, out U result);
+
+            protected static int? GetCountFast<T> (IEnumerable<T> keys) {
+                T[] array = keys as T[];
+                ICollection<T> collection = keys as ICollection<T>;
+
+                if (array != null)
+                    return array.Length;
+                else if (collection != null)
+                    return collection.Count;
+                else
+                    return null;
+            }
 
             protected void CompleteEarly (ref U result) {
                 Future.Complete(result);
@@ -263,18 +276,6 @@ namespace Squared.Data.Mangler {
                 KeyConverter = TangleKey.GetConverter<TKey>();
             }
 
-            protected static int? GetCountFast (IEnumerable<TKey> keys) {
-                TKey[] array = keys as TKey[];
-                ICollection<TKey> collection = keys as ICollection<TKey>;
-
-                if (array != null)
-                    return array.Length;
-                else if (collection != null)
-                    return collection.Count;
-                else
-                    return null;
-            }
-
             protected override void OnExecute (Tangle<T> tangle, out T[] result) {
                 var keys = Keys;
 
@@ -312,18 +313,6 @@ namespace Squared.Data.Mangler {
                 Cascades = cascades;
                 Keys = keys;
                 KeyConverter = TangleKey.GetConverter<TKey>();
-            }
-
-            protected static int? GetCountFast (IEnumerable<TKey> keys) {
-                TKey[] array = keys as TKey[];
-                ICollection<TKey> collection = keys as ICollection<TKey>;
-
-                if (array != null)
-                    return array.Length;
-                else if (collection != null)
-                    return collection.Count;
-                else
-                    return null;
             }
 
             protected override void OnExecute (Tangle<T> tangle, out T[] result) {
@@ -364,6 +353,85 @@ namespace Squared.Data.Mangler {
 
                 foreach (var barrier in Barriers)
                     barrier.JoinCompleteSignal.Set();
+            }
+        }
+
+        private class ForEachThunk<TKey> : ThunkBase<NoneType> {
+            public readonly IEnumerable<TKey> Keys;
+            public readonly TangleKeyConverter<TKey> KeyConverter;
+            public readonly Action<TKey, T> Function;
+
+            public ForEachThunk (IEnumerable<TKey> keys, Action<TKey, T> function) {
+                Keys = keys;
+                KeyConverter = TangleKey.GetConverter<TKey>();
+                Function = function;
+            }
+
+            protected override void OnExecute (Tangle<T> tangle, out NoneType result) {
+                var keys = Keys;
+
+                var count = GetCountFast(Keys);
+                if (!count.HasValue) {
+                    var array = Keys.ToArray();
+                    keys = array;
+                    count = array.Length;
+                }
+
+                Parallel.ForEach(
+                    keys, (rawKey) => {
+                        T value;
+                        if (tangle.InternalGet(KeyConverter(rawKey), out value))
+                            Function(rawKey, value);
+                    }
+                );
+
+                result = NoneType.None;
+            }
+        }
+
+        private class MapReduceThunk<TKey, TMapped> : ThunkBase<TMapped> {
+            public readonly IEnumerable<TKey> Keys;
+            public readonly TangleKeyConverter<TKey> KeyConverter;
+            public readonly Func<TKey, T, TMapped> Map;
+            public readonly Func<TMapped, TMapped, TMapped> Reduce;
+            public readonly TMapped InitialValue;
+            public readonly TMapped DefaultValue;
+
+            public MapReduceThunk (
+                IEnumerable<TKey> keys, Func<TKey, T, TMapped> map, 
+                Func<TMapped, TMapped, TMapped> reduce, 
+                TMapped initialValue, TMapped defaultValue
+            ) {
+                Keys = keys;
+                KeyConverter = TangleKey.GetConverter<TKey>();
+                Map = map;
+                Reduce = reduce;
+                InitialValue = initialValue;
+                DefaultValue = defaultValue;
+            }
+
+            protected override void OnExecute (Tangle<T> tangle, out TMapped result) {
+                var keys = Keys;
+
+                var count = GetCountFast(Keys);
+                if (!count.HasValue) {
+                    var array = Keys.ToArray();
+                    keys = array;
+                    count = array.Length;
+                } 
+                
+                Func<TKey, TMapped> adapter = (rawKey) => {
+                    T value;
+                    if (tangle.InternalGet(KeyConverter(rawKey), out value)) {
+                        return Map(rawKey, value);
+                    }
+
+                    return DefaultValue;
+                };
+
+                result =
+                    (from k in keys.AsParallel().AsOrdered() select adapter(k))
+                    .Aggregate(InitialValue, Reduce);
             }
         }
 

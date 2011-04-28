@@ -17,6 +17,7 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 */
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -319,6 +320,58 @@ namespace Squared.Data.Mangler.Tests {
             Assert.AreEqual(2, Tangle.Count);
             Scheduler.WaitFor(Tangle.Set(1, 3));
             Assert.AreEqual(2, Tangle.Count);
+        }
+
+        [Test]
+        public void TestForeach () {
+            const int numValues = 100000;
+
+            Scheduler.WaitFor(WriteLotsOfValuesInBatch(Tangle, numValues, -1));
+
+            var keys = new List<int>();
+            for (int i = 0; i < numValues; i += 2)
+                keys.Add(i);
+
+            long startTime = Time.Ticks;
+            var bag = new ConcurrentBag<int>();
+            var fForeach = Tangle.ForEach(keys, (key, value) => bag.Add(value));
+            Scheduler.WaitFor(fForeach);
+            decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "{0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                keys.Count, elapsedSeconds, keys.Count / elapsedSeconds
+            );
+
+            Assert.AreEqual(keys.Count, bag.Count());
+
+            Assert.AreEqual(
+                keys.OrderBy((k) => k).ToArray(),
+                bag.OrderBy((k) => k).ToArray()
+            );
+        }
+
+        [Test]
+        public void TestMapReduce () {
+            const int numValues = 100000;
+
+            Scheduler.WaitFor(WriteLotsOfValuesInBatch(Tangle, numValues, -1));
+
+            var keys = new List<int>();
+            for (int i = 0; i < numValues; i += 2)
+                keys.Add(i);
+
+            long startTime = Time.Ticks;
+            var fReduced = Tangle.MapReduce(
+                keys, 
+                (key, value) => (long)(value * 2), 
+                (lhs, rhs) => lhs + rhs
+            );
+            var reduced = Scheduler.WaitFor(fReduced);
+            decimal elapsedSeconds = (decimal)(Time.Ticks - startTime) / Time.SecondInTicks;
+            Console.WriteLine(
+                "{0} values in ~{1:00.000} second(s) at ~{2:00000.00} values/sec.",
+                keys.Count, elapsedSeconds, keys.Count / elapsedSeconds
+            );
         }
 
         [Test]

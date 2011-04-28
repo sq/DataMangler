@@ -219,6 +219,37 @@ namespace Squared.Data.Mangler {
         }
 
         /// <summary>
+        /// Scans over multiple values from the tangle and invokes a function on them.
+        /// </summary>
+        /// <param name="keys">The keys to look up in this tangle.</param>
+        /// <param name="function">The function to invoke on each item from the tangle. This function must be thread-safe.</param>
+        /// <returns>A future that will be completed once all the items have been processed.</returns>
+        public IFuture ForEach<TKey> (IEnumerable<TKey> keys, Action<TKey, T> function) {
+            return QueueWorkItem(new ForEachThunk<TKey>(keys, function));
+        }
+
+        /// <summary>
+        /// Performs a map-reduce operation on multiple values from the tangle.
+        /// </summary>
+        /// <param name="keys">The keys to look up in this tangle.</param>
+        /// <param name="map">The function to use to map each item from the tangle. This function must be thread-safe.</param>
+        /// <param name="reduce">The function to use to reduce a pair of mapped results into one mapped result. This function must be thread-safe.</param>
+        /// <param name="defaultValue">The value to use for keys that cannot be found within the tangle.</param>
+        /// <param name="initialValue">The starting value to feed into the first reduce operation.</param>
+        /// <returns>A future that will contain the final reduced result.</returns>
+        public IFuture MapReduce<TKey, TMapped> (
+            IEnumerable<TKey> keys, Func<TKey, T, TMapped> map, 
+            Func<TMapped, TMapped, TMapped> reduce,
+            TMapped initialValue = default(TMapped),
+            TMapped defaultValue = default(TMapped)
+        ) {
+            return QueueWorkItem(new MapReduceThunk<TKey, TMapped>(
+                keys, map, reduce,
+                initialValue, defaultValue
+            ));
+        }
+
+        /// <summary>
         /// Reads multiple values from the tangle, looking them up based on a provided sequence of keys,
         ///  and then uses those values to perform a lookup within a second tangle.
         /// </summary>
