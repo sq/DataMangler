@@ -189,11 +189,13 @@ namespace Squared.Data.Mangler.Internal {
                 PointerOffset = view.GetPointerOffset();
             }
 
-            public void AddRef () {
-                if (IsDisposed)
-                    throw new ObjectDisposedException("CacheEntry");
-
+            public bool AddRef () {
                 Interlocked.Increment(ref _RefCount);
+
+                if (IsDisposed)
+                    return false;
+                else
+                    return true;
             }
 
             public void RemoveRef () {
@@ -238,7 +240,7 @@ namespace Squared.Data.Mangler.Internal {
 
         public MemoryMappedViewAccessor CreateViewUncached (long offset, uint size, MemoryMappedFileAccess access, out long actualOffset, out uint actualSize) {
             unchecked {
-                const uint chunkSize = 1024 * 1024 * 16;
+                const uint chunkSize = 1024 * 1024 * 64;
 
                 actualOffset = (offset / chunkSize * chunkSize);
                 if (actualOffset < 0)
@@ -283,8 +285,12 @@ namespace Squared.Data.Mangler.Internal {
                 if (offset + size > item.Offset + item.Size)
                     continue;
 
-                item.AddRef();
-                return item;
+                if (item.AddRef())
+                    return item;
+                else {
+                    freeSlot = i;
+                    break;
+                }
             }
 
             if (!freeSlot.HasValue && !oldestUsedSlot.HasValue)
