@@ -164,6 +164,8 @@ namespace Squared.Data.Mangler.Internal {
     }
 
     internal class ViewCache : IDisposable {
+        public const int MaximumStorageFailures = 2;
+
         public unsafe class CacheEntry : IDisposable {
             public readonly long CreatedWhen;
             public readonly SafeBuffer Buffer;
@@ -224,11 +226,43 @@ namespace Squared.Data.Mangler.Internal {
             }
         }
 
+        protected static readonly HashSet<WeakReference> Caches = new HashSet<WeakReference>();
+
         public readonly MemoryMappedFile File;
         public readonly long FileLength;
         public readonly int Capacity;
+        private readonly WeakReference WeakSelf;
         private readonly CacheEntry[] Cache;
         private bool _IsDisposed;
+
+        public static void EmergencyFlush () {
+            WeakReference[] caches;
+            lock (Caches) {
+                caches = new WeakReference[Caches.Count];
+                Caches.CopyTo(caches);
+            }
+
+            var process = Process.GetCurrentProcess();
+            process.Refresh();
+            var memoryBefore = process.VirtualMemorySize64;
+
+            foreach (var wr in caches) {
+                var cache = wr.Target as ViewCache;
+                if (cache == null)
+                    continue;
+
+                cache.Flush();
+            }
+
+            GC.Collect();
+
+            process.Refresh();
+            var memoryAfter = process.VirtualMemorySize64;
+
+            Debug.WriteLine("Failure to map region triggered an emergency cache flush. Freed {0:00000.0} KB of address space.", (memoryBefore - memoryAfter) / 1024.0);
+
+            Thread.Sleep(50);
+        }
 
         public ViewCache (MemoryMappedFile file, long fileLength, int capacity = 4) {
             File = file;
@@ -236,6 +270,11 @@ namespace Squared.Data.Mangler.Internal {
             Capacity = capacity;
             Cache = new CacheEntry[capacity];
             _IsDisposed = false;
+
+            WeakSelf = new WeakReference(this);
+
+            lock (Caches)
+                Caches.Add(WeakSelf);
         }
 
         public MemoryMappedViewAccessor CreateViewUncached (long offset, uint size, MemoryMappedFileAccess access, out long actualOffset, out uint actualSize) {
@@ -254,7 +293,24 @@ namespace Squared.Data.Mangler.Internal {
 
                 actualSize = (uint)(actualEnd - actualOffset);
 
-                return File.CreateViewAccessor(actualOffset, actualSize, access);
+                int failCount = 0;
+                while (true) {
+                    try {
+                        return File.CreateViewAccessor(actualOffset, actualSize, access);
+                    } catch (IOException ex) {
+                        if (ex.Message.Contains("Not enough storage")) {
+                            failCount += 1;
+
+                            if (failCount <= MaximumStorageFailures) {
+                                EmergencyFlush();
+                            } else {
+                                throw;
+                            }
+                        } else {
+                            throw;
+                        }
+                    }
+                }
             }
         }
 
@@ -320,11 +376,14 @@ namespace Squared.Data.Mangler.Internal {
                 var ce = Interlocked.Exchange(ref Cache[i], null);
 
                 if (ce != null)
-                    ce.Release();
+                    ce.RemoveRef();
             }
         }
 
         public void Dispose () {
+            lock (Caches)
+                Caches.Remove(WeakSelf);
+
             Flush();
             _IsDisposed = true;
         }
