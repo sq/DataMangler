@@ -101,7 +101,7 @@ namespace Squared.Data.Mangler {
     /// <param name="leftKey">The left side key.</param>
     /// <param name="leftValue">The left side value.</param>
     /// <returns>The right side key.</returns>
-    public delegate TRightKey JoinKeySelector<TLeftKey, TLeft, TRightKey> 
+    public delegate TRightKey JoinKeySelector<in TLeftKey, TLeft, out TRightKey> 
         (TLeftKey leftKey, ref TLeft leftValue);
 
     /// <summary>
@@ -117,16 +117,16 @@ namespace Squared.Data.Mangler {
     /// <param name="rightKey">The right side key.</param>
     /// <param name="rightValue">The right side value.</param>
     /// <returns>The join result.</returns>
-    public delegate TOut JoinValueSelector<TLeftKey, TLeft, TRightKey, TRight, out TOut> 
+    public delegate TOut JoinValueSelector<in TLeftKey, TLeft, in TRightKey, TRight, out TOut> 
         (TLeftKey leftKey, ref TLeft leftValue, TRightKey rightKey, ref TRight rightValue);
 
-    public delegate TIndexKey IndexFunc<TIndexKey, TValue> (ref TValue value);
+    public delegate TIndexKey IndexFunc<out TIndexKey, TValue> (ref TValue value);
 
     // Making the argument not ref eliminates ambiguity between IndexFunc/IndexMultipleFunc, and
     //  it's helpful anyway since generator functions can't have ref parameters
-    public delegate IEnumerable<TIndexKey> IndexMultipleFunc<TIndexKey, TValue> (TValue value);
+    public delegate IEnumerable<TIndexKey> IndexMultipleFunc<out TIndexKey, in TValue> (TValue value);
 
-    public delegate TangleKey TangleKeyConverter<TValue> (TValue value);
+    public delegate TangleKey TangleKeyConverter<in TValue> (TValue value);
 }
 
 namespace Squared.Data.Mangler.Internal {
