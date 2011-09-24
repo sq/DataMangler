@@ -298,6 +298,7 @@ namespace Squared.Data.Mangler.Internal {
         /// Searches the BTree for a provided key.
         /// </summary>
         /// <param name="key">The key to search for.</param>
+        /// <param name="forInsertion">Indicates that you will be inserting the specified key if it does not already exist. If true, the find operation will prepare the tree for an insert operation.</param>
         /// <param name="nodeIndex">Contains the index of the BTree node where the search ended.</param>
         /// <param name="valueIndex">Contains the index of the value within the node that matched the key, if a match was found. If a match was not found, contains the index of the leaf where the key should be inserted.</param>
         /// <returns>True if the key was found within the tree. False if the key was not found.</returns>

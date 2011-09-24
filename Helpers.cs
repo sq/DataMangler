@@ -71,6 +71,7 @@ namespace Squared.Data.Mangler {
         /// <summary>
         /// Creates a batch.
         /// </summary>
+        /// <param name="tangle">The tangle against which to issue the batch's commands.</param>
         /// <param name="capacity">The maximum number of modifications that the batch can contain.</param>
         public Batch (Tangle<T> tangle, int capacity) {
             Tangle = tangle;
@@ -134,7 +135,6 @@ namespace Squared.Data.Mangler {
         /// <summary>
         /// Adds the batch to the Tangle's work queue.
         /// </summary>
-        /// <param name="tangle">The tangle to modify.</param>
         /// <returns>A future that becomes completed once all the work items in the batch have completed.</returns>
         public Future<int> Execute () {
             return Tangle.QueueWorkItem(new Tangle<T>.BatchThunk(this));

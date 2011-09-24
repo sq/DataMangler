@@ -36,9 +36,9 @@ namespace Squared.Data.Mangler {
 
             protected abstract void OnExecute (Tangle<T> tangle, out U result);
 
-            protected static int? GetCountFast<T> (IEnumerable<T> keys) {
-                T[] array = keys as T[];
-                ICollection<T> collection = keys as ICollection<T>;
+            protected static int? GetCountFast<V> (IEnumerable<V> keys) {
+                V[] array = keys as V[];
+                ICollection<V> collection = keys as ICollection<V>;
 
                 if (array != null)
                     return array.Length;
