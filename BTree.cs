@@ -567,6 +567,7 @@ namespace Squared.Data.Mangler.Internal {
             DataStream.Clear();
 
             Native.memset(_HeaderRange.Pointer, 0, new UIntPtr(BTreeHeader.Size));
+            Native.memset(_FreelistIndexRange.Pointer, 0, new UIntPtr(FreelistIndex.Size));
 
             InitializeBTree();
         }

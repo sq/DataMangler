@@ -186,6 +186,10 @@ namespace Squared.Data.Mangler.Internal {
     }
 
     internal class ViewCache : IDisposable {
+        // Views are scaled up to this size when possible to reduce time spent mapping/unmapping pages.
+        // If this is set too high you risk exhausting available address space.
+        // If it's set too low the cache will not be particularly effective.
+        public const uint ChunkSize = (1024 * 1024) * 16;
         public const int MaximumStorageFailures = 2;
 
         public unsafe class CacheEntry : IDisposable {
@@ -304,13 +308,11 @@ namespace Squared.Data.Mangler.Internal {
 
         public MemoryMappedViewAccessor CreateViewUncached (long offset, uint size, MemoryMappedFileAccess access, out long actualOffset, out uint actualSize) {
             unchecked {
-                const uint chunkSize = 1024 * 1024 * 64;
-
-                actualOffset = (offset / chunkSize * chunkSize);
+                actualOffset = (offset / ChunkSize * ChunkSize);
                 if (actualOffset < 0)
                     actualOffset = 0;
 
-                var actualEnd = ((offset + size) + (chunkSize - 1)) / chunkSize * chunkSize;
+                var actualEnd = ((offset + size) + (ChunkSize - 1)) / ChunkSize * ChunkSize;
                 if (actualEnd < actualOffset)
                     actualEnd = actualOffset;
                 if (actualEnd >= FileLength)
@@ -606,8 +608,9 @@ namespace Squared.Data.Mangler.Internal {
                 Cache = null;
             }
             if (HeaderView != null) {
-                HeaderView.Flush();
-                HeaderView.Dispose();
+                // https://connect.microsoft.com/VisualStudio/feedback/details/552859/memorymappedviewaccessor-flush-throws-ioexception
+                // HeaderView.Dispose();
+                HeaderView.SafeMemoryMappedViewHandle.Dispose();
                 HeaderView = null;
             }
             if (Handle != null) {

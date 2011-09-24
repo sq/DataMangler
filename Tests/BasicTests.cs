@@ -130,6 +130,44 @@ namespace Squared.Data.Mangler.Tests {
         }
 
         [Test]
+        public void FindReferenceIsInvalidatedByAddingNewKey () {
+            Scheduler.WaitFor(Tangle.Set("a", 1));
+            Scheduler.WaitFor(Tangle.Set("b", 2));
+
+            var itemRef = Scheduler.WaitFor(Tangle.Find("a"));
+            Scheduler.WaitFor(Tangle.Set("c", 4));
+
+            Assert.Throws<TangleModifiedException>(
+                () => Scheduler.WaitFor(itemRef.SetValue(3))
+            );
+            Assert.Throws<TangleModifiedException>(
+                () => Scheduler.WaitFor(itemRef.GetValue())
+            );
+            Assert.Throws<TangleModifiedException>(
+                () => Scheduler.WaitFor(itemRef.LockData())
+            );
+        }
+
+        [Test]
+        public void FindReferenceIsInvalidatedByClearing () {
+            Scheduler.WaitFor(Tangle.Set("a", 1));
+            Scheduler.WaitFor(Tangle.Set("b", 2));
+
+            var itemRef = Scheduler.WaitFor(Tangle.Find("a"));
+            Scheduler.WaitFor(Tangle.Clear());
+
+            Assert.Throws<TangleModifiedException>(
+                () => Scheduler.WaitFor(itemRef.SetValue(3))
+            );
+            Assert.Throws<TangleModifiedException>(
+                () => Scheduler.WaitFor(itemRef.GetValue())
+            );
+            Assert.Throws<TangleModifiedException>(
+                () => Scheduler.WaitFor(itemRef.LockData())
+            );
+        }
+
+        [Test]
         public void FindThrowsIfKeyIsNotFound () {
             try {
                 Scheduler.WaitFor(Tangle.Find("missing"));
@@ -843,6 +881,48 @@ namespace Squared.Data.Mangler.Tests {
             }
 
             Assert.AreEqual(newValue, Scheduler.WaitFor(Tangle.Get(key)));
+        }
+
+        [Test]
+        public void TestCopyDataToStream () {
+            var key = new TangleKey("test");
+            var value = new String('a', 1024 * 1024 * 2);
+
+            Scheduler.WaitFor(Tangle.Set(key, value));
+
+            var findResult = Scheduler.WaitFor(Tangle.Find(key));
+            var ms = new MemoryStream();
+
+            Scheduler.WaitFor(findResult.CopyTo(ms, bufferSize: 64 * 1024));
+
+            var expectedBytes = Encoding.UTF8.GetBytes(value);
+            var actualBytes = new byte[expectedBytes.Length];
+
+            ms.Seek(0, SeekOrigin.Begin);
+            ms.Read(actualBytes, 0, expectedBytes.Length);
+
+            Assert.AreEqual(expectedBytes, actualBytes);
+        }
+
+        [Test]
+        public void TestCopyDataFromStream () {
+            var key = new TangleKey("test");
+            var value = new String('a', 1024 * 1024 * 2);
+
+            Scheduler.WaitFor(Tangle.Set(key, ""));
+
+            var findResult = Scheduler.WaitFor(Tangle.Find(key));
+
+            var expectedBytes = Encoding.UTF8.GetBytes(value);
+            var ms = new MemoryStream(expectedBytes);
+
+            Scheduler.WaitFor(findResult.CopyFrom(ms, bufferSize: 64 * 1024));
+
+            var actualBytes = new byte[expectedBytes.Length];
+            ms.Seek(0, SeekOrigin.Begin);
+            ms.Read(actualBytes, 0, expectedBytes.Length);
+
+            Assert.AreEqual(expectedBytes, actualBytes);
         }
     }
 

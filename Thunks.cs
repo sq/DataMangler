@@ -122,9 +122,7 @@ namespace Squared.Data.Mangler {
 
         private class ClearThunk : ThunkBase<NoneType> {
             protected override void OnExecute (Tangle<T> tangle, out NoneType result) {
-                tangle.BTree.Clear();
-                foreach (var index in tangle.Indices.Values)
-                    index.Clear();
+                tangle.InternalClear();
 
                 result = NoneType.None;
             }
@@ -264,6 +262,81 @@ namespace Squared.Data.Mangler {
             public override void Dispose () {
                 DisposedSignal.Dispose();
                 base.Dispose();
+            }
+        }
+
+        private class CopyToStreamThunk : ThunkBase<NoneType> {
+            public readonly long NodeIndex;
+            public readonly uint ValueIndex;
+            public readonly Stream Output;
+            public readonly int? BufferSize;
+
+            public CopyToStreamThunk (long nodeIndex, uint valueIndex, Stream output, int? bufferSize) {
+                NodeIndex = nodeIndex;
+                ValueIndex = valueIndex;
+                Output = output;
+                BufferSize = bufferSize;
+            }
+
+            protected override unsafe void OnExecute (Tangle<T> tangle, out NoneType result) {
+                result = NoneType.None;
+
+                BTreeValue* pValue;
+                ushort keyType;
+
+                using (var nodeRange = tangle.BTree.LockValue(NodeIndex, ValueIndex, null, out pValue, out keyType))
+                using (var dataRange = tangle.BTree.DataStream.AccessRange(pValue->DataOffset, pValue->DataLength + pValue->ExtraDataBytes)) {
+                    var stream = new UnmanagedMemoryStream(dataRange.Pointer, pValue->DataLength);
+
+                    if (BufferSize.HasValue)
+                        stream.CopyTo(Output, BufferSize.Value);
+                    else
+                        stream.CopyTo(Output);
+
+                    stream.Dispose();
+
+                    tangle.BTree.UnlockValue(pValue, keyType);
+                    tangle.BTree.UnlockNode(nodeRange);
+                }
+            }
+        }
+
+        private class CopyFromStreamThunk : ThunkBase<NoneType> {
+            public readonly long NodeIndex;
+            public readonly uint ValueIndex;
+            public readonly Stream Input;
+            public readonly long? BytesToCopy;
+            public readonly int? BufferSize;
+
+            public CopyFromStreamThunk (long nodeIndex, uint valueIndex, Stream input, long? bytesToCopy, int? bufferSize) {
+                NodeIndex = nodeIndex;
+                ValueIndex = valueIndex;
+                Input = input;
+                BytesToCopy = bytesToCopy;
+                BufferSize = bufferSize;
+            }
+
+            protected override unsafe void OnExecute (Tangle<T> tangle, out NoneType result) {
+                result = NoneType.None;
+
+                BTreeValue* pValue;
+                ushort keyType;
+                long? capacity = BytesToCopy.GetValueOrDefault(Input.Length - Input.Position);
+
+                using (var nodeRange = tangle.BTree.LockValue(NodeIndex, ValueIndex, capacity, out pValue, out keyType))
+                using (var dataRange = tangle.BTree.DataStream.AccessRange(pValue->DataOffset, pValue->DataLength + pValue->ExtraDataBytes)) {
+                    var stream = new UnmanagedMemoryStream(dataRange.Pointer, 0, dataRange.Size, FileAccess.ReadWrite);
+
+                    if (BufferSize.HasValue)
+                        Input.CopyTo(stream, BufferSize.Value);
+                    else
+                        Input.CopyTo(stream);
+
+                    stream.Dispose();
+
+                    tangle.BTree.UnlockValue(pValue, keyType);
+                    tangle.BTree.UnlockNode(nodeRange);
+                }
             }
         }
 

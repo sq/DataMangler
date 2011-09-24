@@ -18,6 +18,7 @@ Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Squared.Data.Mangler.Serialization;
 using Squared.Task;
 using System.Threading;
@@ -37,6 +38,12 @@ namespace Squared.Data.Mangler {
             get {
                 return String.Format("The key '{0}' was not found.", Key);
             }
+        }
+    }
+
+    public class TangleModifiedException : Exception {
+        public TangleModifiedException ()
+            : base("The tangle's contents were modified after this FindResult was created so it is no longer valid.") {
         }
     }
 
@@ -84,26 +91,51 @@ namespace Squared.Data.Mangler {
         public struct FindResult {
             public readonly Tangle<T> Tangle;
             public readonly TangleKey Key;
+            private readonly uint Version;
             private readonly long NodeIndex;
             private readonly uint ValueIndex;
 
             internal FindResult (Tangle<T> owner, TangleKey key, long nodeIndex, uint valueIndex) {
                 Tangle = owner;
                 Key = key;
+                Version = owner.Version;
                 NodeIndex = nodeIndex;
                 ValueIndex = valueIndex;
             }
 
             public Future<T> GetValue () {
+                if (Tangle.Version != Version)
+                    throw new TangleModifiedException();
+
                 return Tangle.GetValueByIndex(NodeIndex, ValueIndex);
             }
 
             public IFuture SetValue (T newValue) {
+                if (Tangle.Version != Version)
+                    throw new TangleModifiedException();
+
                 return Tangle.SetValueByIndex(NodeIndex, ValueIndex, ref newValue);
             }
 
             public Future<LockedData> LockData (long? minimumSize = null) {
+                if (Tangle.Version != Version)
+                    throw new TangleModifiedException();
+
                 return Tangle.QueueWorkItem(new LockDataThunk(NodeIndex, ValueIndex, minimumSize));
+            }
+
+            public IFuture CopyFrom (Stream input, long? bytesToCopy = null, int? bufferSize = null) {
+                if (Tangle.Version != Version)
+                    throw new TangleModifiedException();
+
+                return Tangle.QueueWorkItem(new CopyFromStreamThunk(NodeIndex, ValueIndex, input, bytesToCopy, bufferSize));
+            }
+
+            public IFuture CopyTo (Stream output, int? bufferSize = null) {
+                if (Tangle.Version != Version)
+                    throw new TangleModifiedException();
+
+                return Tangle.QueueWorkItem(new CopyToStreamThunk(NodeIndex, ValueIndex, output, bufferSize));
             }
         }
 
@@ -120,6 +152,7 @@ namespace Squared.Data.Mangler {
 
         internal Squared.Task.Internal.WorkerThread<ConcurrentQueue<IWorkItem<T>>> _WorkerThread;
 
+        private uint _Version;
         private bool _IsDisposed;
 
         private readonly BTree BTree;
@@ -323,6 +356,14 @@ namespace Squared.Data.Mangler {
             return QueueWorkItem(new SetByIndexThunk(nodeIndex, valueIndex, ref value));
         }
 
+        protected void InternalClear () {
+            unchecked { _Version++; }
+
+            BTree.Clear();
+            foreach (var index in Indices.Values)
+                index.Clear();
+        }
+
         /// <summary>
         /// Erases the contents of the tangle and all attached indexes.
         /// </summary>
@@ -375,6 +416,12 @@ namespace Squared.Data.Mangler {
         internal long NodeCount {
             get {
                 return BTree.NodeCount;
+            }
+        }
+
+        public uint Version {
+            get {
+                return _Version;
             }
         }
 
@@ -431,6 +478,8 @@ namespace Squared.Data.Mangler {
         }
 
         private void InternalSetFoundValue (long nodeIndex, uint valueIndex, ref T value) {
+            unchecked { _Version++; }
+
             using (var range = BTree.AccessNode(nodeIndex, true)) {
                 ushort keyType;
                 var pEntry = BTree.LockValue(range, valueIndex, out keyType);
@@ -459,6 +508,8 @@ namespace Squared.Data.Mangler {
         }
 
         private bool InternalSet (TangleKey key, ref T value, IReplaceCallback<T> replacementCallback) {
+            unchecked { _Version++; }
+
             long nodeIndex;
             uint valueIndex;
 
