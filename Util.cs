@@ -180,4 +180,36 @@ namespace Squared.Data.Mangler.Internal {
             );
         }
     }
+
+    public static class IntegerUtil {
+        public static int Log2 (uint value) {
+            int result = 0;
+
+            while ((value >>= 1) != 0)
+                result += 1;
+
+            return result;
+        }
+
+        public static bool IsPowerOfTwo (uint value) {
+            unchecked {
+                return (value != 0) &&
+                    ((value & (value - 1)) != 0);
+            }
+        }
+
+        public static uint NextPowerOfTwo (uint value) {
+            unchecked {
+                value--;
+                value |= value >> 1;
+                value |= value >> 2;
+                value |= value >> 4;
+                value |= value >> 8;
+                value |= value >> 16;
+                value++;
+            }
+
+            return value;
+        }
+    }
 }

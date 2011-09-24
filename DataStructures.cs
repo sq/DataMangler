@@ -16,6 +16,7 @@ The Initial Developer of the Original Code is Mozilla Corporation.
 Original Author: Kevin Gadd (kevin.gadd@gmail.com)
 */
 
+using System;
 using System.Runtime.InteropServices;
 using System.IO;
 
@@ -28,6 +29,7 @@ namespace Squared.Data.Mangler.Internal {
         public long WastedDataBytes;
         public long ItemCount;
         public long MutationSentinel;
+        public long FreelistIndexOffset;
 
         static BTreeHeader () {
             Size = (uint)Marshal.SizeOf(typeof(BTreeHeader));
@@ -99,6 +101,21 @@ namespace Squared.Data.Mangler.Internal {
         public fixed byte KeyPrefix[KeyPrefixSize];
     }
 
+    [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 256)]
+    internal unsafe struct FreelistIndex {
+        public const int FirstPower = 4;
+        public const int BucketCount = 16;
+        public const int BucketSize = 2;
+
+        public static readonly uint Size;
+
+        static FreelistIndex () {
+            Size = (uint)Marshal.SizeOf(typeof(FreelistIndex));
+        }
+
+        public fixed uint HeadOffsets[BucketCount];
+    }
+
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     internal unsafe struct FreelistNode {
         public static readonly uint Size;
@@ -107,7 +124,7 @@ namespace Squared.Data.Mangler.Internal {
             Size = (uint)Marshal.SizeOf(typeof(FreelistNode));
         }
 
-        public uint BlockOffset;
         public uint BlockSize;
+        public uint NextBlockOffset;
     }
 }

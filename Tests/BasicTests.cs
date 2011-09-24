@@ -705,11 +705,13 @@ namespace Squared.Data.Mangler.Tests {
             Scheduler.WaitFor(Tangle.Set(1, "abcd"));
             Assert.AreEqual(0, Tangle.WastedDataBytes);
             Scheduler.WaitFor(Tangle.Set(1, "abcdefgh"));
-            Assert.AreEqual(4, Tangle.WastedDataBytes);
+            Assert.AreEqual(0, Tangle.WastedDataBytes);
+            Scheduler.WaitFor(Tangle.Set(1, "abcdefghijkl"));
+            Assert.AreEqual(8, Tangle.WastedDataBytes);
             Scheduler.WaitFor(Tangle.Set(1, "abc"));
-            Assert.AreEqual(4, Tangle.WastedDataBytes);
-            Scheduler.WaitFor(Tangle.Set(1, "abcdefgh"));
-            Assert.AreEqual(4, Tangle.WastedDataBytes);
+            Assert.AreEqual(8, Tangle.WastedDataBytes);
+            Scheduler.WaitFor(Tangle.Set(1, "abcdefghijk"));
+            Assert.AreEqual(8, Tangle.WastedDataBytes);
         }
 
         [Test]
@@ -782,7 +784,27 @@ namespace Squared.Data.Mangler.Tests {
             }
 
             // This will fail if the freelist is not being used
-            Assert.Less(Tangle.WastedDataBytes, wasted3);
+            Assert.Less(Tangle.WastedDataBytes, wasted3, "Freelist not functioning");
+        }
+
+        [Test]
+        // Tests simple freelist behavior including pulling nodes from the tail
+        public void TestFreelist () {
+            Scheduler.WaitFor(Tangle.Set(1, "abcdefghijkl"));
+            Scheduler.WaitFor(Tangle.Set(2, "abcdefgh"));
+            Assert.AreEqual(0, Tangle.WastedDataBytes);
+
+            Scheduler.WaitFor(Tangle.Set(1, "abcdefghijklmnop"));
+            Assert.AreEqual(12, Tangle.WastedDataBytes);
+
+            Scheduler.WaitFor(Tangle.Set(2, "abcdefghijklmnopqrst"));
+            Assert.AreEqual(20, Tangle.WastedDataBytes);
+
+            Scheduler.WaitFor(Tangle.Set(3, "abcdefghijkl"));
+            Assert.AreEqual(8, Tangle.WastedDataBytes);
+
+            Scheduler.WaitFor(Tangle.Set(4, "abcdefgh"));
+            Assert.AreEqual(0, Tangle.WastedDataBytes);
         }
 
         [Test]

@@ -63,6 +63,7 @@ namespace Squared.Data.Mangler.Internal {
 
         public readonly long Offset, Size;
 
+        private bool IsDisposed;
         private readonly SafeBuffer Buffer;
         private readonly MemoryMappedViewAccessor View;
         private readonly ViewCache.CacheEntry CacheEntry;
@@ -76,6 +77,7 @@ namespace Squared.Data.Mangler.Internal {
             Buffer = view.GetSafeBuffer();
             Pointer = null;
             Buffer.AcquirePointer(ref Pointer);
+            IsDisposed = false;
             unchecked {
                 Pointer += view.GetPointerOffset();
                 Pointer += (offset - actualOffset);
@@ -89,6 +91,7 @@ namespace Squared.Data.Mangler.Internal {
             Offset = offset;
             Size = size;
             Buffer = cacheEntry.Buffer;
+            IsDisposed = false;
             unchecked {
                 Pointer = cacheEntry.Pointer + cacheEntry.PointerOffset;
                 Pointer += (offset - cacheEntry.Offset);
@@ -96,11 +99,30 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         public void Dispose () {
+            if (IsDisposed)
+                return;
+
+            IsDisposed = true;
             if (View != null) {
                 Buffer.ReleasePointer();
-                View.Dispose();
-            } else
+
+                // https://connect.microsoft.com/VisualStudio/feedback/details/552859/memorymappedviewaccessor-flush-throws-ioexception
+                // View.Dispose();
+                View.SafeMemoryMappedViewHandle.Dispose();
+            } else if (CacheEntry != null) {
                 CacheEntry.RemoveRef();
+            } else {
+                // Uninitialized
+            }
+        }
+
+        public bool IsValid {
+            get {
+                if (IsDisposed)
+                    return false;
+
+                return ((View != null) && (Buffer != null)) || (CacheEntry != null);
+            }
         }
     }
 
@@ -222,7 +244,10 @@ namespace Squared.Data.Mangler.Internal {
             internal void Release () {
                 IsDisposed = true;
                 Buffer.ReleasePointer();
-                View.Dispose();
+
+                // https://connect.microsoft.com/VisualStudio/feedback/details/552859/memorymappedviewaccessor-flush-throws-ioexception
+                // View.Dispose();
+                View.SafeMemoryMappedViewHandle.Dispose();
             }
         }
 

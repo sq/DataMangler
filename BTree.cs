@@ -9,6 +9,9 @@ using Squared.Data.Mangler.Serialization;
 
 namespace Squared.Data.Mangler.Internal {
     internal unsafe class BTree : IDisposable {
+        public const bool EnableFreelist = true;
+        public const int MaxFreelistSearchLength = 256;
+
         public const uint CurrentFormatVersion = 4;
         public const int MaxSerializationBufferSize = 1024 * 64;
 
@@ -18,9 +21,9 @@ namespace Squared.Data.Mangler.Internal {
         public readonly StreamRef IndexStream;
         public readonly StreamRef KeyStream;
         public readonly StreamRef DataStream;
-        public readonly StreamRef FreelistStream;
 
-        private StreamRange _HeaderRange;
+        private object[] _FreelistBucketLocks;
+        private StreamRange _HeaderRange, _FreelistIndexRange;
         private readonly GetKeyOfEntryFunc _GetKeyOfEntry;
         private MemoryStream _SerializationBuffer;
 
@@ -31,17 +34,18 @@ namespace Squared.Data.Mangler.Internal {
             IndexStream = Storage.Open(prefix + "index");
             KeyStream = Storage.Open(prefix + "keys");
             DataStream = Storage.Open(prefix + "data");
-            FreelistStream = Storage.Open(prefix + "freelist");
 
             VersionCheck(IndexStream);
             VersionCheck(KeyStream);
             VersionCheck(DataStream);
-            VersionCheck(FreelistStream);
 
             bool needInit = IndexStream.Length < BTreeHeader.Size;
 
             IndexStream.LengthChanging += IndexStream_LengthChanging;
             IndexStream.LengthChanged += IndexStream_LengthChanged;
+
+            DataStream.LengthChanging += DataStream_LengthChanging;
+            DataStream.LengthChanged += DataStream_LengthChanged;
 
             _GetKeyOfEntry = ReadKey;
 
@@ -49,6 +53,20 @@ namespace Squared.Data.Mangler.Internal {
 
             if (needInit)
                 InitializeBTree();
+
+            _FreelistBucketLocks = new object[FreelistIndex.BucketCount];
+            for (int i = 0; i < _FreelistBucketLocks.Length; i++)
+                _FreelistBucketLocks[i] = new object();
+
+            EnsureFreelistExists();
+        }
+
+        void DataStream_LengthChanging (object sender, EventArgs e) {
+            _FreelistIndexRange.Dispose();
+        }
+
+        void DataStream_LengthChanged (object sender, EventArgs e) {
+            EnsureFreelistExists();
         }
 
         void IndexStream_LengthChanging (object sender, EventArgs e) {
@@ -518,11 +536,35 @@ namespace Squared.Data.Mangler.Internal {
             CreateRoot();
         }
 
+        private void EnsureFreelistExists () {
+            var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
+
+            if (EnableFreelist) {
+                long oldOffset = 0;
+
+                if (pHeader->FreelistIndexOffset == 0) {
+                    uint size = FreelistIndex.Size;
+                    long? offset = AllocateDataSpace(ref size);
+                    if (!offset.HasValue)
+                        throw new OutOfMemoryException("Unable to allocate space for freelist index in data stream.");
+
+                    oldOffset = Interlocked.Exchange(ref pHeader->FreelistIndexOffset, offset.Value);
+                }
+
+                _FreelistIndexRange = DataStream.AccessRangeUncached(pHeader->FreelistIndexOffset, FreelistIndex.Size, MemoryMappedFileAccess.ReadWrite);
+                Native.memset(_FreelistIndexRange.Pointer, 0, new UIntPtr(FreelistIndex.Size / 4));
+
+                if (oldOffset != 0)
+                    FreelistPut(oldOffset, FreelistIndex.Size);
+            } else {
+                pHeader->FreelistIndexOffset = 0;
+            }
+        }
+
         public void Clear () {
             IndexStream.Clear();
             KeyStream.Clear();
             DataStream.Clear();
-            FreelistStream.Clear();
 
             Native.memset(_HeaderRange.Pointer, 0, new UIntPtr(BTreeHeader.Size));
 
@@ -641,26 +683,70 @@ namespace Squared.Data.Mangler.Internal {
             return result;
         }
 
-        private unsafe long? FreelistGet (ref uint size) {
-            return null;
+        private int FreelistSelectBucket (uint size) {
+            var log2 = IntegerUtil.Log2(size);
+            log2 -= FreelistIndex.FirstPower;
+            if (log2 < 0)
+                log2 = 0;
 
-            long count = FreelistStream.Length / FreelistNode.Size;
+            log2 /= FreelistIndex.BucketSize;
 
-            using (var range = FreelistStream.AccessRange(0, (uint)FreelistStream.Length, MemoryMappedFileAccess.ReadWrite))
-            for (long i = 0; i < count; i++) {
-                FreelistNode * pNode = (FreelistNode *)(range.Pointer + (i * FreelistNode.Size));
+            if (log2 >= FreelistIndex.BucketCount)
+                log2 = FreelistIndex.BucketCount - 1;
 
-                if (pNode->BlockSize >= size) {
-                    var offset = pNode->BlockOffset;
-                    size = pNode->BlockSize;
+            return log2;
+        }
 
-                    Native.memmove((byte *)pNode, (range.Pointer + (FreelistStream.Length - FreelistNode.Size)), new UIntPtr(FreelistNode.Size));
-                    FreelistStream.Shrink((int)FreelistNode.Size);
+        private unsafe long? FreelistTake (ref uint size) {
+            var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
 
-                    var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
-                    Interlocked.Add(ref pHeader->WastedDataBytes, -size);
+            if (EnableFreelist && _FreelistIndexRange.IsValid) {
+                var pIndex = (FreelistIndex*)_FreelistIndexRange.Pointer;
 
-                    return offset;
+                var bucket = FreelistSelectBucket(size);
+                lock (_FreelistBucketLocks[bucket]) {
+                    uint? previousNodeOffset = null;
+                    var nodeOffset = pIndex->HeadOffsets[bucket];
+                    int i = 0;
+
+                    while (nodeOffset != 0) {
+                        bool foundResult = false;
+                        uint? nextOffset = null;
+
+                        using (var range = DataStream.AccessRange(nodeOffset, FreelistNode.Size, MemoryMappedFileAccess.Read)) {
+                            var pNode = (FreelistNode*)range.Pointer;
+
+                            if (pNode->BlockSize >= size) {
+                                size = pNode->BlockSize;
+
+                                if (previousNodeOffset.HasValue) {
+                                    nextOffset = pNode->NextBlockOffset;
+                                } else {
+                                    pIndex->HeadOffsets[bucket] = pNode->NextBlockOffset;
+                                    nextOffset = null;
+                                }
+
+                                Interlocked.Add(ref pHeader->WastedDataBytes, -(pNode->BlockSize));
+                                foundResult = true;
+                            } else {
+                                previousNodeOffset = nodeOffset;
+                                nodeOffset = pNode->NextBlockOffset;
+                            }
+                        }
+
+                        if (foundResult) {
+                            if (nextOffset.HasValue && previousNodeOffset.HasValue)
+                            using (var range = DataStream.AccessRange(previousNodeOffset.Value, FreelistNode.Size, MemoryMappedFileAccess.ReadWrite)) {
+                                var pNode = (FreelistNode*)range.Pointer;
+                                pNode->NextBlockOffset = nextOffset.Value;
+                            }
+
+                            return nodeOffset;
+                        }
+
+                        if (i++ >= MaxFreelistSearchLength)
+                            break;
+                    }
                 }
             }
 
@@ -668,24 +754,36 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         private unsafe void FreelistPut (long blockOffset, uint blockSize) {
-            if (false) {
-                long? offset = FreelistStream.AllocateSpace(FreelistNode.Size);
+            var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
 
-                using (var range = FreelistStream.AccessRange(offset.Value, FreelistNode.Size, MemoryMappedFileAccess.ReadWrite)) {
-                    FreelistNode* pNode = (FreelistNode*)range.Pointer;
-                    pNode->BlockOffset = (uint)blockOffset;
+            if (EnableFreelist && (blockSize >= FreelistNode.Size) && _FreelistIndexRange.IsValid) {
+                var pIndex = (FreelistIndex*)_FreelistIndexRange.Pointer;
+                
+                using (var node = DataStream.AccessRange(blockOffset, blockSize, MemoryMappedFileAccess.Write)) {
+                    var pNode = (FreelistNode*)node.Pointer;
                     pNode->BlockSize = blockSize;
+                    pNode->NextBlockOffset = 0;
+
+                    var bucket = FreelistSelectBucket(blockSize);
+                    lock (_FreelistBucketLocks[bucket]) {
+                        pNode->NextBlockOffset = pIndex->HeadOffsets[bucket];
+                        pIndex->HeadOffsets[bucket] = (uint)blockOffset;
+                    }
                 }
             }
 
-            var pHeader = (BTreeHeader*)_HeaderRange.Pointer;
             Interlocked.Add(ref pHeader->WastedDataBytes, blockSize);
         }
 
         private long? AllocateDataSpace (ref uint size) {
+            if (EnableFreelist) {
+                if (size < FreelistNode.Size)
+                    size = FreelistNode.Size;
+            }
+
             size = ((size + 3) / 4) * 4;
 
-            var result = FreelistGet(ref size);
+            var result = FreelistTake(ref size);
             if (!result.HasValue)
                 result = DataStream.AllocateSpace(size);
 
@@ -793,14 +891,12 @@ namespace Squared.Data.Mangler.Internal {
         }
 
         public void FlushCache () {
-            FreelistStream.FlushCache();
             IndexStream.FlushCache();
             KeyStream.FlushCache();
             DataStream.FlushCache();
         }
 
         public void Dispose () {
-            FreelistStream.Dispose();
             IndexStream.Dispose();
             KeyStream.Dispose();
             DataStream.Dispose();
