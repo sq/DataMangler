@@ -9,7 +9,7 @@ It's a persistent embedded key-value store for .NET.
 Wait, really? Why?
 ------------------
 
-I needed a fast, storage solution for a data-crunching application I was writing. I tried SQLite, but it was way too slow. All of the key-value stores out there were either under incompatible open-source licenses or required you to set up a server and send queries over the network.
+I needed a fast storage solution for a data-crunching application I was writing. I tried SQLite, but it was way too slow. All of the key-value stores out there were either under incompatible open-source licenses or required you to set up a server and send queries over the network.
 
 How is it different?
 --------------------
